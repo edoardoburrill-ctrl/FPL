@@ -77,7 +77,7 @@ optimiser exists — which is what makes Phase 1 usable within days.
 
 | Endpoint | Gives us |
 |---|---|
-| `bootstrap-static/` | players, teams, positions, prices, ownership, form, xG/xA/xGI, DefCon stats, **and `game_settings` (authoritative scoring rules)** |
+| `bootstrap-static/` | players, teams, positions, prices, ownership, form, xG/xA/xGI, DefCon stats, `game_settings` |
 | `fixtures/` | full fixture list, kickoff times, FDR, blanks/doubles |
 | `element-summary/{id}/` | per-player per-fixture history, minutes log, past seasons |
 | `event/{gw}/live/` | live points and BPS during a gameweek |
@@ -86,9 +86,13 @@ optimiser exists — which is what makes Phase 1 usable within days.
 | `entry/{id}/history/` | your chip usage history and per-GW record |
 | `leagues-classic/{id}/standings/` | mini-league standings |
 
-**Scoring rules are read from `game_settings` at runtime, never hardcoded.** FPL
-changed BPS this season and will change it again; a hardcoded rule table is a silent
-accuracy bug waiting to happen.
+**Scoring rules are encoded once and then verified empirically.** The API does not
+publish a machine-readable table of point values, so the rules have to be written
+down by hand — and hand-written rules rot silently when FPL tweaks the game. The
+guard is `fpl verify`, which replays every historical stat line through our scoring
+function and compares the result with the `total_points` the API reported. If our
+table is wrong, the mismatch rate says so immediately, and a JSON override file
+corrects it without a code change.
 
 ### 2.2 Bookmaker odds
 
@@ -233,11 +237,13 @@ Penalty duties are handled explicitly: `E[pens] = P(team wins pen) × P(p is tak
 Bonus is where naive models leak the most accuracy, because BPS is *ranked within a
 match* — it is inherently a joint, not marginal, quantity. So we model it jointly:
 
-1. Learn a BPS-per-event mapping directly from the current season's `game_settings`
-   BPS table (this season's changes — CBI at 1 per 3, GK saves at 2, no
-   tackled-penalty — are picked up automatically).
+1. Encode the BPS-per-event table for the current season (2026/27 changed it: CBI at
+   1 per 3, GK saves at 2 plus 1 for a big chance saved, no tackled-penalty), and
+   hold it to the same empirical verification as the scoring table.
 2. In the Monte Carlo (§3.6), simulate each player's event counts, compute their BPS,
    rank all 22+ players in the fixture, and award 3/2/1 with FPL's tie rules.
+   (Until then, v1 uses a normal-approximation threshold model — monotone and
+   roughly calibrated, and the weakest term in the projection.)
 3. `E[bonus_p]` and the full bonus distribution fall out of the simulation.
 
 ### 3.6 Monte Carlo match engine
@@ -490,7 +496,7 @@ Stack: Python 3.11, `httpx`, `pandas`, `numpy`, `scipy`, `statsmodels`, `pulp`/`
 | Risk | Mitigation |
 |---|---|
 | Blocked egress in the build sandbox | Cached fixtures for all development; live sync runs locally / in Actions |
-| FPL changes scoring rules mid-season | Scoring read from `game_settings` at runtime, never hardcoded |
+| FPL changes scoring rules mid-season | `fpl verify` replays history against our table and fails loudly; JSON override fixes it without a release |
 | Early-season small samples | Empirical-Bayes shrinkage to positional and prior-season priors; market-anchored team strength |
 | Over-fitting to noise | Bootstrap-resampled transfer recommendations; strict no-lookahead backtest |
 | Optimiser over-trusting point estimates | Report resample stability alongside every recommendation |

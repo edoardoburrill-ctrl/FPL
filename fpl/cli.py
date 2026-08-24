@@ -1,0 +1,338 @@
+"""Command line interface."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from fpl.app import App
+from fpl.data.fpl_client import FPLUnavailable
+from fpl.models.projection import project_gameweek
+from fpl.models.scoring import POSITION_NAMES, verify_rules
+from fpl.state.ledger import SquadState
+
+app = typer.Typer(add_completion=False, help="Quantitative FPL advisor.")
+console = Console()
+
+
+def _app(offline: bool, entry: int | None = None) -> App:
+    return App.create(offline=offline, entry_id=entry)
+
+
+def _resolve_gameweek(ctx, gameweek: int | None) -> int:
+    if gameweek:
+        return gameweek
+    current = ctx.current_event
+    if current is None:
+        raise typer.BadParameter("could not determine the next gameweek; pass --gw")
+    return current
+
+
+def _name(ctx, element_id: int) -> str:
+    element = ctx.element(element_id)
+    team = next((t for t in ctx.teams if int(t["id"]) == int(element["team"])), {})
+    return f"{element['web_name']} ({team.get('short_name', '?')})"
+
+
+@app.command()
+def sync(
+    entry: Optional[int] = typer.Option(None, help="Your FPL entry (team) id."),
+    deep: bool = typer.Option(False, help="Also pull per-fixture minutes logs."),
+    offline: bool = typer.Option(False, help="Use cached data only."),
+) -> None:
+    """Pull the latest data, snapshot it, and refresh squad state."""
+    application = _app(offline, entry)
+    try:
+        report = application.sync(deep=deep)
+    except FPLUnavailable as exc:
+        console.print(f"[red]Sync failed:[/red] {exc}")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Snapshot[/green] {report['observed_at']}  "
+                  f"{report['players']} players, next GW {report['next_event']}")
+    console.print(f"Odds matched to {report['odds_matched']} fixtures")
+    if report.get("odds_unmatched"):
+        console.print(f"[yellow]Unmatched odds events:[/yellow] "
+                      f"{', '.join(report['odds_unmatched'])}")
+    if "squad_gameweek" in report:
+        console.print(f"Squad synced at GW{report['squad_gameweek']}  "
+                      f"bank £{report['bank']/10:.1f}m  "
+                      f"free transfers {report['free_transfers']}")
+    if report.get("deep_histories"):
+        console.print(f"Deep history pulled for {report['deep_histories']} players")
+    for error in report.get("errors", []):
+        console.print(f"[yellow]{error}[/yellow]")
+
+    changes = application.store.price_changes()
+    if changes:
+        console.print(f"\n[bold]Price changes since last snapshot[/bold]")
+        for change in changes[:15]:
+            direction = "[green]+[/green]" if change["delta"] > 0 else "[red]-[/red]"
+            console.print(f"  {direction} element {change['element']}: "
+                          f"£{change['was']/10:.1f}m -> £{change['now']/10:.1f}m")
+
+
+@app.command()
+def projections(
+    gameweek: Optional[int] = typer.Option(None, "--gw", help="Gameweek to project."),
+    top: int = typer.Option(25, help="How many players to show."),
+    position: Optional[str] = typer.Option(None, help="GKP, DEF, MID or FWD."),
+    max_cost: Optional[float] = typer.Option(None, help="Price ceiling in millions."),
+    offline: bool = typer.Option(True, help="Use cached data only."),
+    deep: bool = typer.Option(False, help="Use per-fixture minutes logs if pulled."),
+) -> None:
+    """Expected points per player for a gameweek."""
+    application = _app(offline)
+    ctx = application.context()
+    gameweek = _resolve_gameweek(ctx, gameweek)
+    histories = application.histories(application.bootstrap(), deep=deep) if deep else {}
+    results = project_gameweek(ctx, gameweek, histories=histories)
+
+    wanted = None
+    if position:
+        wanted = {v: k for k, v in POSITION_NAMES.items()}.get(position.upper())
+        if wanted is None:
+            raise typer.BadParameter("position must be GKP, DEF, MID or FWD")
+
+    rows = []
+    for projection in results.values():
+        element = ctx.element(projection.element)
+        if wanted and int(element["element_type"]) != wanted:
+            continue
+        if max_cost and element["now_cost"] / 10 > max_cost:
+            continue
+        rows.append((projection, element))
+    rows.sort(key=lambda r: -r[0].expected_points)
+
+    table = Table(title=f"Gameweek {gameweek} projections")
+    for column in ("Player", "Pos", "£m", "xPts", "P(start)", "Apps", "Goals",
+                   "Assists", "CS", "DefCon", "Bonus"):
+        table.add_column(column, justify="right" if column != "Player" else "left")
+
+    for projection, element in rows[:top]:
+        b = projection.breakdown
+        table.add_row(
+            _name(ctx, projection.element),
+            POSITION_NAMES.get(int(element["element_type"]), "?"),
+            f"{element['now_cost']/10:.1f}",
+            f"[bold]{projection.expected_points:.2f}[/bold]",
+            f"{projection.minutes.p_start:.0%}",
+            f"{b.get('appearance', 0):.2f}",
+            f"{b.get('goals', 0):.2f}",
+            f"{b.get('assists', 0):.2f}",
+            f"{b.get('clean_sheet', 0):.2f}",
+            f"{b.get('defensive_contribution', 0):.2f}",
+            f"{b.get('bonus', 0):.2f}",
+        )
+    console.print(table)
+
+
+@app.command()
+def captain(
+    gameweek: Optional[int] = typer.Option(None, "--gw"),
+    top: int = typer.Option(8),
+    squad_only: bool = typer.Option(True, help="Only consider players you own."),
+    offline: bool = typer.Option(True),
+) -> None:
+    """Captaincy ranking for a gameweek."""
+    application = _app(offline)
+    ctx = application.context()
+    gameweek = _resolve_gameweek(ctx, gameweek)
+    results = project_gameweek(ctx, gameweek)
+
+    state = application.load_state()
+    pool = list(results.values())
+    if squad_only and state.holdings:
+        owned = set(state.element_ids)
+        pool = [p for p in pool if p.element in owned]
+    pool.sort(key=lambda p: -p.expected_points)
+
+    if not pool:
+        console.print("[yellow]No players to rank — sync your squad first.[/yellow]")
+        raise typer.Exit(1)
+
+    table = Table(title=f"Gameweek {gameweek} captaincy")
+    table.add_column("Player")
+    table.add_column("xPts", justify="right")
+    table.add_column("Captained", justify="right")
+    table.add_column("Gap to next", justify="right")
+
+    best = pool[0].expected_points
+    for i, projection in enumerate(pool[:top]):
+        gap = projection.expected_points - (
+            pool[i + 1].expected_points if i + 1 < len(pool) else projection.expected_points
+        )
+        table.add_row(
+            _name(ctx, projection.element),
+            f"{projection.expected_points:.2f}",
+            f"{2 * projection.expected_points:.2f}",
+            f"{gap:+.2f}" if i + 1 < len(pool) else "-",
+        )
+    console.print(table)
+
+    margin = best - (pool[1].expected_points if len(pool) > 1 else best)
+    if margin < 0.35:
+        console.print(
+            "[yellow]The top two are within a third of a point — this is close to a "
+            "coin-flip, so ownership and risk appetite matter more than the model "
+            "here.[/yellow]"
+        )
+
+
+@app.command()
+def squad(offline: bool = typer.Option(True)) -> None:
+    """Show your current squad, its value and what you can do this week."""
+    application = _app(offline)
+    state = application.load_state()
+    if not state.holdings:
+        console.print("[yellow]No squad recorded yet. Run `fpl sync --entry <id>`.[/yellow]")
+        raise typer.Exit(1)
+
+    ctx = application.context()
+    prices = {int(e["id"]): int(e["now_cost"]) for e in ctx.elements}
+
+    table = Table(title=f"Squad after GW{state.gameweek}")
+    for column in ("Player", "Pos", "Bought", "Now", "Sells for", "Profit"):
+        table.add_column(column, justify="right" if column != "Player" else "left")
+
+    for holding in state.holdings:
+        element = ctx.element(holding.element)
+        now = prices.get(holding.element, holding.purchase_price)
+        sells = holding.selling_price(now)
+        table.add_row(
+            _name(ctx, holding.element),
+            POSITION_NAMES.get(int(element["element_type"]), "?"),
+            f"{holding.purchase_price/10:.1f}",
+            f"{now/10:.1f}",
+            f"{sells/10:.1f}",
+            f"{(sells - holding.purchase_price)/10:+.1f}",
+        )
+    console.print(table)
+    console.print(
+        f"Bank £{state.bank/10:.1f}m · squad sells for "
+        f"£{state.squad_value(prices)/10:.1f}m · total budget "
+        f"£{state.budget(prices)/10:.1f}m"
+    )
+    console.print(
+        f"Free transfers: {state.free_transfers} · chips available: "
+        f"{', '.join(state.chips_available()) or 'none'}"
+    )
+
+
+@app.command()
+def explain(
+    player: str = typer.Argument(..., help="Player name or element id."),
+    gameweek: Optional[int] = typer.Option(None, "--gw"),
+    offline: bool = typer.Option(True),
+) -> None:
+    """Break a projection down term by term."""
+    application = _app(offline)
+    ctx = application.context()
+    gameweek = _resolve_gameweek(ctx, gameweek)
+
+    matches = []
+    if player.isdigit():
+        matches = [int(player)]
+    else:
+        needle = player.lower()
+        matches = [
+            int(e["id"])
+            for e in ctx.elements
+            if needle in str(e.get("web_name", "")).lower()
+            or needle in f"{e.get('first_name','')} {e.get('second_name','')}".lower()
+        ]
+    if not matches:
+        console.print(f"[red]No player matching {player!r}[/red]")
+        raise typer.Exit(1)
+
+    results = project_gameweek(ctx, gameweek)
+    for element_id in matches[:5]:
+        projection = results.get(element_id)
+        if projection is None:
+            continue
+        console.print(f"\n[bold]{_name(ctx, element_id)}[/bold] — GW{gameweek}")
+        console.print(projection.explain())
+
+
+@app.command()
+def verify(offline: bool = typer.Option(True), players: int = typer.Option(60)) -> None:
+    """Check the encoded scoring rules against real historical results."""
+    application = _app(offline)
+    bootstrap = application.bootstrap()
+    positions = {int(e["id"]): int(e["element_type"]) for e in bootstrap["elements"]}
+
+    candidates = sorted(
+        bootstrap["elements"], key=lambda e: -int(e.get("minutes", 0) or 0)
+    )[:players]
+
+    lines = []
+    for element in candidates:
+        try:
+            summary = application.client.element_summary(int(element["id"]))
+        except FPLUnavailable:
+            continue
+        for row in summary.get("history", []):
+            lines.append((row, positions[int(element["id"])]))
+
+    if not lines:
+        console.print(
+            "[yellow]No per-fixture history available. Run `fpl sync --deep` "
+            "somewhere with network access first.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    report = verify_rules(lines)
+    colour = "green" if report.ok else "red"
+    console.print(f"[{colour}]{report.summary()}[/{colour}]")
+    for example in report.examples[:5]:
+        console.print(
+            f"  element {example['element']} fixture {example['fixture']} "
+            f"({example['position']}): predicted {example['predicted']}, "
+            f"actual {example['actual']}"
+        )
+
+
+@app.command()
+def prices(offline: bool = typer.Option(True), top: int = typer.Option(15)) -> None:
+    """Recent price changes and current transfer momentum."""
+    application = _app(offline)
+    ctx = application.context()
+
+    changes = application.store.price_changes()
+    if changes:
+        table = Table(title="Price changes since the previous snapshot")
+        table.add_column("Player")
+        table.add_column("Was", justify="right")
+        table.add_column("Now", justify="right")
+        for change in changes[:top]:
+            table.add_row(
+                _name(ctx, change["element"]),
+                f"{change['was']/10:.1f}",
+                f"{change['now']/10:.1f}",
+            )
+        console.print(table)
+    else:
+        console.print("No price changes recorded yet (needs two snapshots).")
+
+    momentum = application.store.transfer_momentum(top=top)
+    if momentum:
+        table = Table(title="Transfer momentum this gameweek")
+        table.add_column("Player")
+        table.add_column("Net transfers", justify="right")
+        table.add_column("£m", justify="right")
+        for row in momentum:
+            table.add_row(
+                _name(ctx, row["element"]),
+                f"{row['net']:+,}",
+                f"{row['now_cost']/10:.1f}",
+            )
+        console.print(table)
+
+
+if __name__ == "__main__":
+    app()
