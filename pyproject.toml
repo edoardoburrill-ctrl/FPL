@@ -29,3 +29,7 @@ include = ["fpl*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # PuLP 3.x warns about its own PuLP 4 migration on every variable created.
+    "ignore::DeprecationWarning:pulp",
+]

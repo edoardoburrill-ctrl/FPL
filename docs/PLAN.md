@@ -408,18 +408,19 @@ before each deadline.
 Sequenced so the **maths is usable first**, as requested. Each phase ends with
 something you can actually run.
 
-**Phase 0 — Foundations.** Repo skeleton, FPL + odds clients with caching, SQLite
+**Phase 0 — Foundations.** *(done)* Repo skeleton, FPL + odds clients with caching, SQLite
 schema, snapshotting, state ledger from your team ID, test fixtures captured for
 offline development. *Ends with:* `fpl sync` and `fpl squad` working.
 
-**Phase 1 — Projection engine v1 (the priority).** Minutes model, odds-anchored team
+**Phase 1 — Projection engine v1 (the priority).** *(done)* Minutes model, odds-anchored team
 goals with Dixon–Coles, shrunk player rates, analytic points assembly for goals,
 assists, clean sheets, conceded, saves, DefCon, and a first-pass regression bonus
 model. *Ends with:* `fpl projections` and `fpl captain` — a defensible xPts table for
 the next gameweek. **This is the point at which the tool starts earning points.**
 
-**Phase 2 — Optimiser.** Multi-gameweek MILP with transfers, hits, FT carry-over,
-selling prices, bench weighting. *Ends with:* `fpl transfers` and `fpl brief`.
+**Phase 2 — Optimiser.** *(done)* Multi-gameweek MILP with transfers, hits, FT
+carry-over, selling prices, bench weighting. Chips (wildcard) supported; the rest
+land in Phase 4. *Ends with:* `fpl transfers` and `fpl brief`.
 
 **Phase 3 — Rigour.** Monte Carlo match engine replacing the analytic assembly,
 proper ranked-BPS bonus, correlation-aware captaincy, bootstrap-robust transfer

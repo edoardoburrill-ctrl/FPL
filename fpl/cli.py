@@ -14,7 +14,10 @@ from fpl.app import App
 from fpl.data.fpl_client import FPLUnavailable
 from fpl.models.projection import project_gameweek
 from fpl.models.scoring import POSITION_NAMES, verify_rules
-from fpl.state.ledger import SquadState
+from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
+from fpl.optimize.milp import prune_pool
+from fpl.report.brief import build_brief
+from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
 app = typer.Typer(add_completion=False, help="Quantitative FPL advisor.")
 console = Console()
@@ -257,6 +260,172 @@ def explain(
             continue
         console.print(f"\n[bold]{_name(ctx, element_id)}[/bold] — GW{gameweek}")
         console.print(projection.explain())
+
+
+@app.command()
+def transfers(
+    horizon: int = typer.Option(5, help="How many gameweeks to plan over."),
+    max_hits: int = typer.Option(1, help="Most points hits to consider per week."),
+    discount: float = typer.Option(0.85, help="Per-gameweek discount on future points."),
+    wildcard: Optional[int] = typer.Option(None, help="Gameweek to play a wildcard."),
+    time_limit: float = typer.Option(90.0, help="Solver time limit in seconds."),
+    offline: bool = typer.Option(True),
+) -> None:
+    """Plan transfers over a rolling horizon."""
+    application = _app(offline)
+    ctx = application.context()
+    state = application.load_state()
+    if not state.holdings:
+        console.print(
+            "[yellow]No squad recorded. Run `fpl sync --entry <id>` first, or use "
+            "`fpl brief` to see projections without one.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    gameweeks = horizon_gameweeks(ctx, horizon)
+    console.print(f"Projecting gameweeks {gameweeks[0]}-{gameweeks[-1]}...")
+    projections = project_horizon(ctx, gameweeks)
+    players = build_players(ctx, projections, state)
+
+    brief = build_brief(
+        ctx, state, players, projections, gameweeks,
+        discount=discount, max_hits=max_hits,
+        wildcard_gameweek=wildcard, time_limit=time_limit,
+    )
+    _render_plan(ctx, brief)
+
+
+def _render_plan(ctx, brief) -> None:
+    if not brief.plan.solved:
+        for warning in brief.warnings:
+            console.print(f"[red]{warning}[/red]")
+        raise typer.Exit(1)
+
+    table = Table(title=f"Plan from GW{brief.gameweek}")
+    for column in ("GW", "Out", "In", "FT", "Hits", "Bank", "Captain", "xPts"):
+        table.add_column(column, justify="right" if column != "Out" else "left")
+
+    for decision in brief.plan.decisions:
+        outs = ", ".join(_name(ctx, e) for e in decision.transfers_out) or "-"
+        ins = ", ".join(_name(ctx, e) for e in decision.transfers_in) or "-"
+        table.add_row(
+            str(decision.gameweek), outs, ins,
+            str(decision.free_transfers), str(decision.hits),
+            f"{decision.bank:.1f}",
+            _name(ctx, decision.captain) if decision.captain else "-",
+            f"{decision.expected_points:.1f}",
+        )
+    console.print(table)
+    console.print(
+        f"Objective over the horizon: [bold]{brief.plan.objective:.2f}[/bold] "
+        f"(holding instead: {brief.hold_plan.objective:.2f}) — "
+        f"acting is worth [bold]{brief.gain:+.2f}[/bold] points"
+    )
+
+
+@app.command()
+def brief(
+    horizon: int = typer.Option(5, help="How many gameweeks to plan over."),
+    max_hits: int = typer.Option(1),
+    wildcard: Optional[int] = typer.Option(None),
+    time_limit: float = typer.Option(90.0),
+    offline: bool = typer.Option(True),
+) -> None:
+    """The one command that matters: what to do before this deadline."""
+    application = _app(offline)
+    ctx = application.context()
+    state = application.load_state()
+    if not state.holdings:
+        console.print("[yellow]No squad recorded. Run `fpl sync --entry <id>`.[/yellow]")
+        raise typer.Exit(1)
+
+    gameweeks = horizon_gameweeks(ctx, horizon)
+    projections = project_horizon(ctx, gameweeks)
+    players = build_players(ctx, projections, state)
+    result = build_brief(
+        ctx, state, players, projections, gameweeks,
+        max_hits=max_hits, wildcard_gameweek=wildcard, time_limit=time_limit,
+    )
+
+    if not result.plan.solved:
+        for warning in result.warnings:
+            console.print(f"[red]{warning}[/red]")
+        raise typer.Exit(1)
+
+    header = f"[bold]Gameweek {result.gameweek}[/bold]"
+    if result.deadline:
+        header += f" — deadline {result.deadline:%a %d %b %H:%M} UTC"
+    console.print(header)
+
+    console.print("\n[bold]Transfers[/bold]")
+    if not result.moves:
+        console.print(
+            f"  Hold. No move clears the bar this week "
+            f"(best available is worth {result.gain:+.2f} over the horizon)."
+        )
+    else:
+        for move in result.moves:
+            console.print(
+                f"  Sell {_name(ctx, move.out_element)} "
+                f"(£{move.out_sell_price/10:.1f}m) → "
+                f"buy {_name(ctx, move.in_element)} (£{move.in_buy_price/10:.1f}m)"
+            )
+        cost = f"{result.hits} hit(s), -{result.hits * TRANSFER_HIT_COST} pts" \
+            if result.hits else "free"
+        console.print(f"  Cost: {cost}. Bank afterwards £{result.bank:.1f}m.")
+        console.print(
+            f"  Worth [bold]{result.gain:+.2f}[/bold] points over "
+            f"GW{gameweeks[0]}-{gameweeks[-1]} versus holding."
+        )
+        if not result.gain_is_meaningful:
+            console.print(
+                "  [yellow]That is inside the model's own noise — holding the "
+                "transfer is defensible.[/yellow]"
+            )
+
+    console.print("\n[bold]Starting eleven[/bold]")
+    ranked = sorted(
+        result.starting, key=lambda e: -projections[result.gameweek][e].expected_points
+    )
+    for element in ranked:
+        marker = ""
+        if element == result.captain:
+            marker = " (C)"
+        elif element == result.vice:
+            marker = " (V)"
+        console.print(
+            f"  {_name(ctx, element)}{marker}: "
+            f"{projections[result.gameweek][element].expected_points:.2f}"
+        )
+    console.print("[bold]Bench[/bold] " + ", ".join(
+        f"{_name(ctx, e)} ({projections[result.gameweek][e].expected_points:.2f})"
+        for e in sorted(result.bench,
+                        key=lambda e: -projections[result.gameweek][e].expected_points)
+    ))
+
+    console.print("\n[bold]Captain[/bold]")
+    if result.captain:
+        console.print(
+            f"  {_name(ctx, result.captain)} — "
+            f"{projections[result.gameweek][result.captain].expected_points:.2f} xPts, "
+            f"{margin_text(result.captain_margin)}"
+        )
+
+    console.print(
+        f"\n[bold]Chips available[/bold]: {', '.join(result.chips_available) or 'none'}"
+        f" · free transfers after this week: {result.free_transfers}"
+    )
+
+    if result.warnings:
+        console.print("\n[bold]Watch[/bold]")
+        for warning in result.warnings:
+            console.print(f"  [yellow]{warning}[/yellow]")
+
+
+def margin_text(margin: float) -> str:
+    if margin < 0.35:
+        return f"only {margin:+.2f} clear of the next option — effectively a coin-flip"
+    return f"{margin:+.2f} clear of the next option"
 
 
 @app.command()

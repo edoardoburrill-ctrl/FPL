@@ -13,7 +13,7 @@ The full design and the mathematics behind each component are in
 |---|---|---|
 | 0 | Data clients, snapshot store, squad ledger, CLI | done |
 | 1 | Projection engine: minutes, team goals, player rates, points | done |
-| 2 | Multi-gameweek transfer optimiser | in progress |
+| 2 | Multi-gameweek transfer optimiser | done |
 | 3 | Monte Carlo engine, ranked bonus, calibration, backtest | planned |
 | 4 | Chips, price prediction, scheduled automation | planned |
 
@@ -41,6 +41,8 @@ fpl projections --position DEF --max-cost 5.5
 fpl captain --gw 3                 # captaincy ranking with the margin to the next option
 fpl squad                          # your squad, selling prices, bank, chips, free transfers
 fpl explain haaland                # term-by-term breakdown of a projection
+fpl transfers --horizon 5          # multi-gameweek transfer plan
+fpl brief                          # the one command: what to do before this deadline
 fpl prices                         # overnight price changes and transfer momentum
 fpl verify                         # replay history to prove the scoring rules are right
 ```
