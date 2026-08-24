@@ -16,7 +16,8 @@ from fpl.models.projection import project_gameweek
 from fpl.models.scoring import POSITION_NAMES, verify_rules
 from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
 from fpl.optimize.milp import prune_pool
-from fpl.report.brief import build_brief
+from fpl.optimize.chips import chip_calendar
+from fpl.report.brief import build_brief, render_markdown
 from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
 app = typer.Typer(add_completion=False, help="Quantitative FPL advisor.")
@@ -329,6 +330,7 @@ def brief(
     max_hits: int = typer.Option(1),
     wildcard: Optional[int] = typer.Option(None),
     time_limit: float = typer.Option(90.0),
+    markdown: bool = typer.Option(False, help="Emit markdown instead of a table."),
     offline: bool = typer.Option(True),
 ) -> None:
     """The one command that matters: what to do before this deadline."""
@@ -346,6 +348,11 @@ def brief(
         ctx, state, players, projections, gameweeks,
         max_hits=max_hits, wildcard_gameweek=wildcard, time_limit=time_limit,
     )
+
+    if markdown:
+        names = {int(e["id"]): _name(ctx, int(e["id"])) for e in ctx.elements}
+        print(render_markdown(result, names, projections, gameweeks))
+        return
 
     if not result.plan.solved:
         for warning in result.warnings:
@@ -426,6 +433,56 @@ def margin_text(margin: float) -> str:
     if margin < 0.35:
         return f"only {margin:+.2f} clear of the next option — effectively a coin-flip"
     return f"{margin:+.2f} clear of the next option"
+
+
+@app.command()
+def chips(
+    horizon: int = typer.Option(8, help="How many gameweeks to consider."),
+    restructuring: bool = typer.Option(
+        True, help="Also evaluate Wildcard and Free Hit (slower)."
+    ),
+    time_limit: float = typer.Option(45.0, help="Solver time limit per solve."),
+    offline: bool = typer.Option(True),
+) -> None:
+    """When to play each chip, measured in points rather than folklore."""
+    application = _app(offline)
+    ctx = application.context()
+    state = application.load_state()
+    if not state.holdings:
+        console.print("[yellow]No squad recorded. Run `fpl sync --entry <id>`.[/yellow]")
+        raise typer.Exit(1)
+
+    gameweeks = horizon_gameweeks(ctx, horizon)
+    console.print(f"Evaluating chips over GW{gameweeks[0]}-{gameweeks[-1]}...")
+    projections = project_horizon(ctx, gameweeks)
+    players = build_players(ctx, projections, state)
+    pool = prune_pool(players, gameweeks, always_include=state.element_ids)
+
+    baseline, advice = chip_calendar(
+        pool, gameweeks, state,
+        include_restructuring=restructuring, time_limit=time_limit,
+    )
+    if not baseline.solved:
+        console.print(f"[red]Optimiser returned {baseline.status}[/red]")
+        raise typer.Exit(1)
+
+    table = Table(title="Chip calendar")
+    table.add_column("Chip")
+    table.add_column("Best gameweek", justify="right")
+    table.add_column("Gain vs no chip", justify="right")
+    for item in advice:
+        table.add_row(
+            item.label,
+            f"GW{item.gameweek}" if item.gameweek else "-",
+            f"{item.gain:+.2f}" if item.worth_playing else "-",
+        )
+    console.print(table)
+    console.print(
+        "Gains are measured against playing no chip at all over the same horizon. "
+        "Holding a chip is worth nothing in itself — but a chip played outside "
+        "this horizon may still be worth more, so widen --horizon before "
+        "committing."
+    )
 
 
 @app.command()

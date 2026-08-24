@@ -1,0 +1,62 @@
+name: Gameweek brief
+
+# Runs ahead of the usual Friday and Saturday deadlines, and on demand. The
+# brief lands in the run summary, so it is readable from a phone without
+# checking anything out.
+on:
+  schedule:
+    - cron: "0 9 * * 4"   # Thursday morning: time to plan
+    - cron: "0 9 * * 5"   # Friday morning: most deadlines are 18:30 Friday
+    - cron: "0 8 * * 6"   # Saturday morning: 11:00 deadlines
+  workflow_dispatch:
+    inputs:
+      horizon:
+        description: "Gameweeks to plan over"
+        default: "5"
+      max_hits:
+        description: "Most points hits to consider"
+        default: "1"
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Restore data
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: fpl-data-${{ github.run_id }}
+          restore-keys: fpl-data-
+
+      - name: Sync
+        env:
+          FPL_ENTRY_ID: ${{ vars.FPL_ENTRY_ID }}
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: fpl sync --deep
+
+      - name: Build brief
+        env:
+          FPL_ENTRY_ID: ${{ vars.FPL_ENTRY_ID }}
+        run: |
+          fpl brief \
+            --horizon "${{ inputs.horizon || '5' }}" \
+            --max-hits "${{ inputs.max_hits || '1' }}" \
+            --time-limit 240 \
+            --markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save data
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: fpl-data-${{ github.run_id }}

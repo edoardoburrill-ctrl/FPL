@@ -76,6 +76,7 @@ class Decision:
     hits: int
     bank: float
     expected_points: float
+    chip: str | None = None
 
     @property
     def transfer_count(self) -> int:
@@ -211,6 +212,8 @@ def optimise(
     wildcard_gameweek: int | None = None,
     forced_out: Iterable[int] = (),
     captain_candidates: int = 25,
+    bench_boost_gameweeks: Iterable[int] | None = None,
+    triple_captain_gameweeks: Iterable[int] | None = None,
     time_limit: float | None = 90.0,
     solver: pulp.LpSolver | None = None,
 ) -> Plan:
@@ -229,6 +232,8 @@ def optimise(
 
     gameweeks = list(gameweeks)
     players = list(players)
+    allowed_bench_boost = set(bench_boost_gameweeks or ())
+    allowed_triple_captain = set(triple_captain_gameweeks or ())
     by_id = {p.element: p for p in players}
     owned = [e for e in current_squad if e in by_id]
     if current_squad and len(owned) != len(current_squad):
@@ -268,6 +273,30 @@ def optimise(
         for pid in ids
     }
 
+    # Chips. Bench Boost and Triple Captain are decided inside the program: both
+    # are products of a chip binary with a selection binary, and both linearise
+    # cleanly, so "should I bench boost this week?" becomes a direct comparison
+    # of optimised trajectories rather than a rule of thumb. Wildcard and Free
+    # Hit restructure the problem itself and are passed in as scenarios.
+    bench_boost = {
+        t: pulp.LpVariable(f"bench_boost_{t}", cat="Binary")
+        for t in index
+        if gameweeks[t] in allowed_bench_boost
+    }
+    triple_captain = {
+        t: pulp.LpVariable(f"triple_captain_{t}", cat="Binary")
+        for t in index
+        if gameweeks[t] in allowed_triple_captain
+    }
+    # boosted[p][t]: this bench player's points count in full this gameweek.
+    boosted = {
+        p.element: {
+            t: pulp.LpVariable(f"boosted_{p.element}_{t}", lowBound=0, upBound=1)
+            for t in bench_boost
+        }
+        for p in players
+    }
+
     hits = pulp.LpVariable.dicts("hits", index, lowBound=0, cat="Integer")
     free = pulp.LpVariable.dicts(
         "free", index, lowBound=0, upBound=MAX_FREE_TRANSFERS, cat="Integer"
@@ -275,6 +304,16 @@ def optimise(
     remaining = pulp.LpVariable.dicts(
         "remaining", index, lowBound=0, upBound=MAX_FREE_TRANSFERS, cat="Integer"
     )
+
+    # tripled[p][t]: this captain's points count a third time this gameweek.
+    tripled = {
+        pid: {
+            t: pulp.LpVariable(f"tripled_{pid}_{t}", lowBound=0, upBound=1)
+            for t in triple_captain
+            if t in captain[pid]
+        }
+        for pid in ids
+    }
 
     # -- objective -------------------------------------------------------
 
@@ -294,6 +333,13 @@ def optimise(
             contributions.append(
                 weight * points * bench * (squad[pid][t] - start[pid][t])
             )
+            if t in bench_boost:
+                # A Bench Boost pays the remaining fraction of the bench.
+                contributions.append(
+                    weight * points * (1.0 - bench) * boosted[pid][t]
+                )
+            if t in triple_captain and t in captain[pid]:
+                contributions.append(weight * points * tripled[pid][t])
         contributions.append(-weight * TRANSFER_HIT_COST * hits[t])
         # `free_transfers = min(5, remaining + 1)` is expressed as upper bounds,
         # which the solver only pushes against when a hit is at stake. A token
@@ -397,6 +443,45 @@ def optimise(
             problem += free[t] <= remaining[t - 1] + 1
             problem += free[t] <= MAX_FREE_TRANSFERS
 
+    # -- chips -----------------------------------------------------------
+
+    for t in index:
+        # FPL allows at most one chip per gameweek.
+        active = []
+        if t in bench_boost:
+            active.append(bench_boost[t])
+        if t in triple_captain:
+            active.append(triple_captain[t])
+        if wildcard_gameweek is not None and gameweeks[t] == wildcard_gameweek:
+            active.append(1)
+        if len(active) > 1:
+            problem += pulp.lpSum(active) <= 1
+
+        for player in players:
+            pid = player.element
+            if t in bench_boost:
+                # boosted = bench_boost AND (in squad, not starting)
+                problem += boosted[pid][t] <= bench_boost[t]
+                problem += boosted[pid][t] <= squad[pid][t] - start[pid][t]
+                problem += (
+                    boosted[pid][t]
+                    >= (squad[pid][t] - start[pid][t]) - (1 - bench_boost[t])
+                )
+            if t in triple_captain and t in captain[pid]:
+                problem += tripled[pid][t] <= triple_captain[t]
+                problem += tripled[pid][t] <= captain[pid][t]
+                problem += (
+                    tripled[pid][t] >= captain[pid][t] - (1 - triple_captain[t])
+                )
+
+    # Each chip is playable at most once across the horizon given to us; the
+    # caller decides which gameweeks are eligible, which is where the two-set,
+    # half-season structure is enforced.
+    if bench_boost:
+        problem += pulp.lpSum(bench_boost.values()) <= 1
+    if triple_captain:
+        problem += pulp.lpSum(triple_captain.values()) <= 1
+
     for element in forced_out:
         if element in by_id:
             problem += squad[element][0] == 0
@@ -464,8 +549,22 @@ def optimise(
             skipper = captains[0] if captains else (starters[0] if starters else None)
             vice = next((e for e in starters if e != skipper), None)
 
+            chip = None
+            if t in bench_boost and (bench_boost[t].value() or 0) > 0.5:
+                chip = "bboost"
+            elif t in triple_captain and (triple_captain[t].value() or 0) > 0.5:
+                chip = "3xc"
+            elif wildcard_gameweek is not None and gameweek == wildcard_gameweek:
+                chip = "wildcard"
+
             points = sum(by_id[e].ep(gameweek) for e in starting)
             points += by_id[skipper].ep(gameweek) if skipper else 0.0
+            if chip == "3xc" and skipper:
+                points += by_id[skipper].ep(gameweek)
+            if chip == "bboost":
+                points += sum(
+                    by_id[e].ep(gameweek) for e in chosen if e not in starting
+                )
             points -= TRANSFER_HIT_COST * int(round(hits[t].value() or 0))
 
             decisions.append(
@@ -481,6 +580,7 @@ def optimise(
                     hits=int(round(hits[t].value() or 0)),
                     bank=running_bank / 10.0,
                     expected_points=points,
+                    chip=chip,
                 )
             )
 

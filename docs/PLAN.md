@@ -428,9 +428,13 @@ recommendations, calibration suite and the full season-replay backtest. Hyperpar
 (`γ`, horizon, shrinkage `k`, decay `ξ`) tuned against backtest rather than intuition.
 *Ends with:* measured evidence the thing beats its baselines.
 
-**Phase 4 — Chips, automation, polish.** Chips inside the MILP with the GW19 expiry
-constraint, price-change prediction, blank/double detection and planning, GitHub
-Actions for scheduled sync and pre-deadline briefs, `fpl explain` breakdowns.
+**Phase 4 — Chips, automation, polish.** *(mostly done)* Bench Boost and Triple
+Captain are decided inside the MILP; Wildcard and Free Hit are evaluated by
+re-solving the horizon with the chip active in each candidate gameweek. Chip
+eligibility enforces the two-set, GW19-expiry structure. GitHub Actions handle
+scheduled sync and pre-deadline briefs. `fpl explain` gives term-by-term
+breakdowns. Still outstanding: price-change prediction, and modelling the Free
+Hit's squad revert explicitly rather than bounding it with wildcard semantics.
 
 Phases 0–1 are the urgent ones and are deliberately small enough to land quickly;
 Phases 2–4 improve the edge without you being blocked from using the tool meanwhile.

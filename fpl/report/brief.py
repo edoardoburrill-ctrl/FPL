@@ -197,3 +197,96 @@ def build_brief(
         chips_available=state.chips_available(gameweek),
         warnings=warnings,
     )
+
+
+def render_markdown(
+    brief: Brief,
+    names: Mapping[int, str],
+    projections: Mapping[int, Mapping[int, PlayerProjection]],
+    horizon: Sequence[int],
+) -> str:
+    """The brief as markdown, for a job summary, an issue comment or a file."""
+    gameweek = brief.gameweek
+    points = projections[gameweek]
+    lines: list[str] = []
+
+    header = f"# Gameweek {gameweek}"
+    if brief.deadline:
+        header += f" — deadline {brief.deadline:%a %d %b %H:%M} UTC"
+    lines.append(header)
+
+    if not brief.plan.solved:
+        lines.append("")
+        lines.append("**No plan available.**")
+        lines.extend(f"- {w}" for w in brief.warnings)
+        return "\n".join(lines)
+
+    lines += ["", "## Transfers", ""]
+    if not brief.moves:
+        lines.append(
+            f"**Hold.** Nothing clears the bar this week — the best move available "
+            f"is worth {brief.gain:+.2f} points over GW{horizon[0]}-{horizon[-1]}."
+        )
+    else:
+        for move in brief.moves:
+            lines.append(
+                f"- Sell **{names.get(move.out_element, move.out_element)}** "
+                f"(£{move.out_sell_price/10:.1f}m) → buy "
+                f"**{names.get(move.in_element, move.in_element)}** "
+                f"(£{move.in_buy_price/10:.1f}m)"
+            )
+        cost = (
+            f"{brief.hits} hit ({-brief.hits * TRANSFER_HIT_COST} pts)"
+            if brief.hits
+            else "free"
+        )
+        lines.append("")
+        lines.append(
+            f"Cost: {cost}. Bank afterwards £{brief.bank:.1f}m. Worth "
+            f"**{brief.gain:+.2f}** points over GW{horizon[0]}-{horizon[-1]} "
+            f"versus holding."
+        )
+        if not brief.gain_is_meaningful:
+            lines.append("")
+            lines.append(
+                "> That is inside the model's own noise. Holding is defensible."
+            )
+
+    lines += ["", "## Team", "", "| | Player | xPts |", "|---|---|---|"]
+    ranked = sorted(brief.starting, key=lambda e: -points[e].expected_points)
+    for element in ranked:
+        role = "C" if element == brief.captain else ("V" if element == brief.vice else "")
+        lines.append(
+            f"| {role} | {names.get(element, element)} | "
+            f"{points[element].expected_points:.2f} |"
+        )
+    for element in sorted(brief.bench, key=lambda e: -points[e].expected_points):
+        lines.append(
+            f"| bench | {names.get(element, element)} | "
+            f"{points[element].expected_points:.2f} |"
+        )
+
+    if brief.captain:
+        lines += ["", "## Captain", ""]
+        verdict = (
+            "effectively a coin-flip"
+            if brief.captain_is_close
+            else "a clear enough margin to trust"
+        )
+        lines.append(
+            f"**{names.get(brief.captain, brief.captain)}** — "
+            f"{points[brief.captain].expected_points:.2f} xPts, "
+            f"{brief.captain_margin:+.2f} clear of the next option ({verdict})."
+        )
+
+    lines += ["", "## Chips and transfers", ""]
+    lines.append(
+        f"Available: {', '.join(brief.chips_available) or 'none'}. "
+        f"Free transfers after this week: {brief.free_transfers}."
+    )
+
+    if brief.warnings:
+        lines += ["", "## Watch", ""]
+        lines.extend(f"- {w}" for w in brief.warnings)
+
+    return "\n".join(lines)
