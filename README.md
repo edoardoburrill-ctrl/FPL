@@ -44,13 +44,19 @@ fpl explain haaland                # term-by-term breakdown of a projection
 fpl transfers --horizon 5          # multi-gameweek transfer plan
 fpl brief                          # the one command: what to do before this deadline
 fpl brief --markdown               # same, as markdown for a report or job summary
-fpl chips                          # when to play each chip, measured in points
+fpl chips --horizon 8              # when to play each chip, measured in points
+fpl chips --restructuring          # also evaluate Wildcard and Free Hit (slow)
 fpl prices                         # overnight price changes and transfer momentum
 fpl verify                         # replay history to prove the scoring rules are right
 ```
 
 `sync` needs network access to `fantasy.premierleague.com`. Everything else runs
 from the local cache, so projections and analysis work offline.
+
+Solve times on a full player pool: `brief` and `transfers` take around twenty
+seconds, `chips` around two minutes over six gameweeks. `--restructuring` adds a
+full re-solve per candidate gameweek and takes considerably longer, which is why
+it is opt-in.
 
 ## Automation
 

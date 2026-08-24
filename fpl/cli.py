@@ -439,7 +439,10 @@ def margin_text(margin: float) -> str:
 def chips(
     horizon: int = typer.Option(8, help="How many gameweeks to consider."),
     restructuring: bool = typer.Option(
-        True, help="Also evaluate Wildcard and Free Hit (slower)."
+        False,
+        help="Also evaluate Wildcard and Free Hit. Much slower: these re-solve "
+             "the horizon once per candidate gameweek, and a wildcard week makes "
+             "every transfer free, which is by far the hardest case to solve.",
     ),
     time_limit: float = typer.Option(45.0, help="Solver time limit per solve."),
     offline: bool = typer.Option(True),
@@ -477,6 +480,11 @@ def chips(
             f"{item.gain:+.2f}" if item.worth_playing else "-",
         )
     console.print(table)
+    if not restructuring:
+        console.print(
+            "[dim]Wildcard and Free Hit not evaluated — pass --restructuring to "
+            "include them (expect several minutes).[/dim]"
+        )
     console.print(
         "Gains are measured against playing no chip at all over the same horizon. "
         "Holding a chip is worth nothing in itself — but a chip played outside "

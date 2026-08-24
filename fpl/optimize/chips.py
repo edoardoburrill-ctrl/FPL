@@ -84,7 +84,7 @@ def chip_calendar(
     gameweeks: Sequence[int],
     state: SquadState,
     *,
-    include_restructuring: bool = True,
+    include_restructuring: bool = False,
     discount: float = CHIP_DISCOUNT,
     **solver_kwargs,
 ) -> tuple[Plan, list[ChipAdvice]]:
