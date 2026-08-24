@@ -105,3 +105,27 @@ def test_eligibility_respects_the_two_halves():
 def test_unused_chips_are_eligible_everywhere():
     state = SquadState()
     assert eligible_gameweeks(state, "wildcard", [5, 25]) == [5, 25]
+
+
+def test_a_chip_is_saved_for_a_better_week_later():
+    """The classic chip mistake is burning it early; the model must not.
+
+    A bench worth 3 points a head now and 6 a head in gameweek 4 should be
+    boosted in gameweek 4, even though the discount makes the present cheaper.
+    """
+    from fpl.optimize.chips import CHIP_DISCOUNT
+
+    players = make_pool()
+    with_points(players, {
+        1: {e: 3.0 for e in range(1, 43)},
+        2: {e: 3.0 for e in range(1, 43)},
+        3: {e: 3.0 for e in range(1, 43)},
+        4: {e: 6.0 for e in range(1, 43)},
+    })
+    plan = solve(players, (1, 2, 3, 4), bench_boost_gameweeks=[1, 2, 3, 4],
+                 discount=CHIP_DISCOUNT)
+    played = [d for d in plan.decisions if d.chip == "bboost"]
+    assert len(played) == 1
+    assert played[0].gameweek == 4, (
+        "the chip was burned early — check the discount used for chip timing"
+    )

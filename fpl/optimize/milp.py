@@ -463,16 +463,28 @@ def optimise(
                 # boosted = bench_boost AND (in squad, not starting)
                 problem += boosted[pid][t] <= bench_boost[t]
                 problem += boosted[pid][t] <= squad[pid][t] - start[pid][t]
-                problem += (
-                    boosted[pid][t]
-                    >= (squad[pid][t] - start[pid][t]) - (1 - bench_boost[t])
-                )
             if t in triple_captain and t in captain[pid]:
                 problem += tripled[pid][t] <= triple_captain[t]
                 problem += tripled[pid][t] <= captain[pid][t]
-                problem += (
-                    tripled[pid][t] >= captain[pid][t] - (1 - triple_captain[t])
+
+        # Counting constraints instead of the usual big-M lower bounds. The
+        # squad is always 15 and the eleven is always 11, so a Bench Boost
+        # always boosts exactly four players and a Triple Captain always
+        # triples exactly one. Stating it that way keeps the relaxation from
+        # spreading a fraction of a chip across every gameweek at once, which
+        # is what turns this from a tractable program into an intractable one.
+        if t in bench_boost:
+            problem += (
+                pulp.lpSum(boosted[p.element][t] for p in players)
+                == (SQUAD_SIZE - XI_SIZE) * bench_boost[t]
+            )
+        if t in triple_captain:
+            problem += (
+                pulp.lpSum(
+                    tripled[pid][t] for pid in captain_pool[t] if t in tripled[pid]
                 )
+                == triple_captain[t]
+            )
 
     # Each chip is playable at most once across the horizon given to us; the
     # caller decides which gameweeks are eligible, which is where the two-set,

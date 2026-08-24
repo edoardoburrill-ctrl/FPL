@@ -24,6 +24,18 @@ from typing import Iterable, Mapping, Sequence
 from fpl.optimize.milp import Plan, Player, optimise
 from fpl.state.ledger import FIRST_HALF_LAST_GAMEWEEK, SquadState
 
+# Chip timing needs a near-neutral discount, not the transfer planner's 0.85.
+#
+# The horizon discount exists because a transfer plan for gameweek 8 will be
+# revised long before it is executed, so points promised then are worth less than
+# points available now. That argument does not transfer to chips. A chip decision
+# is a comparison between playing it this week and playing it in gameweek 8, and
+# discounting the later branch at 0.85^5 would shrink a 12-point double-gameweek
+# Bench Boost to 5 — advising you to burn chips early, which is precisely the
+# mistake chip strategy is about avoiding. A small residual discount is kept
+# because a distant chip week can still be disrupted by a fixture change.
+CHIP_DISCOUNT = 0.97
+
 CHIP_LABELS = {
     "wildcard": "Wildcard",
     "freehit": "Free Hit",
@@ -73,6 +85,7 @@ def chip_calendar(
     state: SquadState,
     *,
     include_restructuring: bool = True,
+    discount: float = CHIP_DISCOUNT,
     **solver_kwargs,
 ) -> tuple[Plan, list[ChipAdvice]]:
     """Baseline plan plus the best gameweek for each available chip.
@@ -85,6 +98,7 @@ def chip_calendar(
         current_squad=state.element_ids,
         bank=state.bank,
         free_transfers=state.free_transfers,
+        discount=discount,
         **solver_kwargs,
     )
 

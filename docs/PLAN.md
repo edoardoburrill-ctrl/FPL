@@ -322,6 +322,23 @@ Because chips are *inside* the optimisation rather than decided by rules of thum
 the answer to "should I bench boost this week?" is a direct comparison of two
 optimised trajectories, in points.
 
+**Chip timing uses a near-neutral discount (0.97), not the transfer planner's 0.85.**
+The horizon discount exists because a transfer plan for gameweek 8 will be revised
+before it is executed. That argument does not apply to a chip: the decision is a
+comparison between playing it now and playing it in gameweek 8, and discounting the
+later branch at 0.85⁵ would shrink a 12-point double-gameweek Bench Boost to 5,
+advising you to burn chips early — exactly the mistake chip strategy exists to
+avoid. A small residual discount remains, because a distant chip week can still be
+disrupted by a fixture change.
+
+**Formulation note.** Bench Boost and Triple Captain are products of a chip binary
+with a selection binary. The textbook big-M linearisation is correct but disastrously
+weak here: it lets the relaxation spread a fraction of a chip across every gameweek
+at once, and solve times ran past fifteen minutes. Replacing the big-M lower bounds
+with counting constraints — a Bench Boost boosts *exactly* four players, a Triple
+Captain triples *exactly* one — is equally exact and brings the same solve back to
+around twelve seconds.
+
 **Robustness.** The MILP maximises expected points against a single point estimate.
 To avoid over-fitting to model noise we also solve across bootstrap resamples of the
 projections and report **how often each recommended transfer appears** — a transfer
