@@ -12,6 +12,8 @@ Documentation:
   invariants, and where the seams are. Read this before changing anything.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — the non-obvious choices and why they
   went the way they did, including the ones that were wrong the first time.
+- [`docs/TODO.md`](docs/TODO.md) — the short list of things only you can do, and
+  when.
 
 ## Status
 
