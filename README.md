@@ -4,8 +4,14 @@ A quantitative decision engine for Fantasy Premier League. It projects a
 probability distribution of points for every player in every upcoming gameweek
 and turns that into concrete weekly decisions: transfers, captain, bench, chips.
 
-The full design and the mathematics behind each component are in
-[`docs/PLAN.md`](docs/PLAN.md).
+Documentation:
+
+- [`docs/PLAN.md`](docs/PLAN.md) — the build plan and the mathematics behind each
+  component, with the equations.
+- [`docs/DESIGN.md`](docs/DESIGN.md) — the system as built: module contracts,
+  invariants, and where the seams are. Read this before changing anything.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — the non-obvious choices and why they
+  went the way they did, including the ones that were wrong the first time.
 
 ## Status
 

@@ -276,8 +276,10 @@ false precision.
 ## 4. The optimiser
 
 A **multi-gameweek mixed-integer linear program**, horizon `H = 5–8` gameweeks,
-solved with HiGHS (via PuLP or `highspy`) — free, and fast enough for this at a few
-seconds per solve.
+solved with CBC via PuLP — free, bundled, and fast enough at roughly twenty seconds
+for a five-gameweek plan once the formulation is tightened (see
+[`DECISIONS.md`](DECISIONS.md)). HiGHS was the original intention and would be
+faster, but it is not available in every environment, and CBC proved sufficient.
 
 **Variables** for player `p`, gameweek `t`:
 `x_{p,t}` in squad · `y_{p,t}` in XI · `c_{p,t}` captain · `v_{p,t}` vice ·
@@ -460,42 +462,52 @@ Phases 2–4 improve the edge without you being blocked from using the tool mean
 
 ## 9. Repository layout
 
+> This section describes the plan as originally drawn. For the layout and module
+> contracts of the system **as actually built**, see [`DESIGN.md`](DESIGN.md);
+> for the reasoning behind the choices that changed along the way, see
+> [`DECISIONS.md`](DECISIONS.md).
+
 ```
 fpl/
   cli.py                    # Typer CLI
-  config.py
+  app.py                    # wiring: clients, store, state, fitted context
+  config.py                 # paths, settings, fpl.toml, entry-id validation
   data/
-    fpl_client.py           # official API, cached
-    odds_client.py          # the-odds-api, de-vigging
-    store.py  schema.sql    # SQLite + snapshots
+    fpl_client.py           # official API, cached, 404 distinguished
+    odds_client.py          # the-odds-api, consensus and fixture matching
+    store.py                # SQLite snapshots
   models/
-    minutes.py              # §3.1
-    team_strength.py        # §3.2 Dixon–Coles + market solve
     devig.py                # Shin's method
+    minutes.py              # §3.1
+    team_strength.py        # §3.2 Dixon-Coles + market inversion
     player_rates.py         # §3.3 empirical-Bayes shrinkage
-    defensive.py            # §3.4
-    bps.py                  # §3.5
-    simulate.py             # §3.6 Monte Carlo engine
-    scoring.py              # game_settings-driven scoring table
+    points.py               # §3.4-3.5 threshold-aware points assembly
+    scoring.py              # scoring rules + empirical verifier
+    projection.py           # the pipeline tying the above together
   optimize/
-    milp.py                 # §4
-    chips.py  bench.py
+    milp.py                 # §4 multi-gameweek program, chips included
+    chips.py                # chip calendar and eligibility
+    inputs.py               # context + state -> optimiser inputs
   state/
-    ledger.py  squad.py     # §5
+    ledger.py               # §5 squad, purchase prices, free transfers
+    resolve.py              # name resolution for manual squad entry
   report/
-    brief.py  explain.py
-  backtest/
-    replay.py  metrics.py   # §6
+    brief.py                # the weekly brief, terminal and markdown
 tests/
-  fixtures/                 # captured API JSON — offline dev
+  fixtures/synthetic.py     # generated league with known latent parameters
 data/                       # snapshots, sqlite (gitignored)
 .github/workflows/
   sync.yml  brief.yml
-docs/PLAN.md                # this file
+fpl.toml                    # entry id (public); secrets stay in the environment
+docs/
+  PLAN.md  DESIGN.md  DECISIONS.md
 ```
 
-Stack: Python 3.11, `httpx`, `pandas`, `numpy`, `scipy`, `statsmodels`, `pulp`/`highspy`,
-`typer`, `pytest`. No paid dependencies; the odds API free tier is sufficient.
+Not yet built, and planned for Phase 3: `models/simulate.py` (Monte Carlo engine),
+`models/bps.py` (ranked bonus), `backtest/replay.py` and `backtest/metrics.py`.
+
+Stack: Python 3.11, `httpx`, `numpy`, `scipy`, `pandas`, `pulp` (CBC), `typer`,
+`rich`, `pytest`. No paid dependencies; the odds API free tier is sufficient.
 
 ---
 
