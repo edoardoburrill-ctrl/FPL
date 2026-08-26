@@ -112,3 +112,31 @@ def test_account_uuid_is_rejected_with_an_explanation():
 def test_other_nonsense_is_rejected():
     with pytest.raises(InvalidEntryId):
         parse_entry_id("my-team")
+
+
+def test_config_file_supplies_the_entry_id(tmp_path, monkeypatch):
+    """The entry id should not have to live in a shell profile."""
+    from fpl import config
+
+    monkeypatch.delenv("FPL_ENTRY_ID", raising=False)
+    (tmp_path / "fpl.toml").write_text("entry_id = 4242\n")
+    monkeypatch.chdir(tmp_path)
+    assert config.settings().entry_id == 4242
+
+
+def test_environment_overrides_the_config_file(tmp_path, monkeypatch):
+    from fpl import config
+
+    (tmp_path / "fpl.toml").write_text("entry_id = 4242\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("FPL_ENTRY_ID", "99")
+    assert config.settings().entry_id == 99
+
+
+def test_malformed_config_file_does_not_crash(tmp_path, monkeypatch):
+    from fpl import config
+
+    monkeypatch.delenv("FPL_ENTRY_ID", raising=False)
+    (tmp_path / "fpl.toml").write_text("this is not = = toml\n")
+    monkeypatch.chdir(tmp_path)
+    assert config.settings().entry_id is None

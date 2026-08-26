@@ -501,9 +501,10 @@ Stack: Python 3.11, `httpx`, `pandas`, `numpy`, `scipy`, `statsmodels`, `pulp`/`
 
 ## 10. What is needed from you
 
-1. **Your FPL team ID** — the number in the URL when you view your points page
-   (`fantasy.premierleague.com/entry/XXXXXXX/event/2`). Everything about squad state
-   keys off this.
+1. **Your FPL team ID** — recorded in `fpl.toml`. It is the number in the URL of
+   your points page (`fantasy.premierleague.com/entry/XXXXXXX/event/2`), and FPL
+   reissues it every season. Not strictly required: `fpl set-squad` records a
+   squad by hand without one.
 2. **Your current squad, bank, and free transfers** if you have already made GW2
    moves — the purchase-price ledger cannot be reconstructed retroactively from the
    API, so the sooner it is seeded, the more accurate selling prices stay all season.

@@ -32,9 +32,13 @@ export ODDS_API_KEY=...            # optional, free tier at the-odds-api.com
 export FPL_DATA_DIR=./data         # optional, where snapshots and state live
 ```
 
-Your **entry id** is the number in the URL of your Points page. It is not your
-premierleague.com account id (a UUID), and FPL reissues entry ids every season,
-so last season's will not work.
+Your **entry id** can also live in `fpl.toml` at the repository root, which is
+where this checkout keeps it, so no shell export is needed. It is the number in
+the URL of your Points page — not your premierleague.com account id (a UUID) —
+and FPL reissues entry ids every season, so `fpl.toml` needs updating each
+August. The environment variable overrides the file when both are set.
+
+Secrets do not go in `fpl.toml`; `ODDS_API_KEY` is read from the environment.
 
 You do not actually need it. `fpl sync` snapshots the player pool without one,
 and `fpl set-squad` records your squad by hand:

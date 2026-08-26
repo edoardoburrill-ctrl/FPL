@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,11 +99,36 @@ class Settings:
     default_horizon: int = 5
 
 
+CONFIG_FILENAME = "fpl.toml"
+
+
+def _config_file() -> dict:
+    """Read ``fpl.toml`` from the working directory or the repository root.
+
+    A config file means the entry id lives with the project rather than in a
+    shell profile that has to be re-exported on every new machine and every new
+    terminal. An FPL entry id is public information — anyone can view
+    ``/entry/<id>/`` — so it is fine to commit; the odds API key is not, and
+    stays in the environment.
+    """
+    for directory in (Path.cwd(), *Path(__file__).resolve().parents[:3]):
+        candidate = directory / CONFIG_FILENAME
+        if candidate.exists():
+            try:
+                return tomllib.loads(candidate.read_text())
+            except tomllib.TOMLDecodeError:
+                return {}
+    return {}
+
+
 def settings() -> Settings:
-    # A malformed FPL_ENTRY_ID is surfaced, not silently ignored: quietly
-    # treating it as absent is how you end up wondering why your squad never
-    # syncs.
+    # Precedence: environment first so a one-off override works without editing
+    # a file, then the committed config. A malformed value is surfaced, not
+    # silently ignored: quietly treating it as absent is how you end up
+    # wondering why your squad never syncs.
+    config = _config_file()
+    raw_entry = os.environ.get("FPL_ENTRY_ID") or config.get("entry_id")
     return Settings(
-        entry_id=parse_entry_id(os.environ.get("FPL_ENTRY_ID")),
+        entry_id=parse_entry_id(raw_entry),
         odds_api_key=os.environ.get("ODDS_API_KEY") or None,
     )

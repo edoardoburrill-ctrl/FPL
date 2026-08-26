@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from fpl.config import Paths, Settings, paths, settings
-from fpl.data.fpl_client import FPLClient, FPLUnavailable
+from fpl.data.fpl_client import FPLClient, FPLNotFound, FPLUnavailable
 from fpl.data.odds_client import FixtureOdds, OddsClient, match_to_fixtures
 from fpl.data.store import Store
 from fpl.models.projection import ProjectionContext, build_context
@@ -153,6 +153,14 @@ class App:
         if entry:
             try:
                 report.update(self._sync_entry(entry, bootstrap, current))
+            except FPLNotFound:
+                report["errors"].append(
+                    f"FPL has no entry {entry}. Check the number in the URL of "
+                    "your Points page — fantasy.premierleague.com/entry/"
+                    "<NUMBER>/event/2 — remembering that FPL reissues entry ids "
+                    "every season. Player data was still synced, and you can "
+                    "record your squad by hand with `fpl set-squad`."
+                )
             except FPLUnavailable as exc:
                 report["errors"].append(f"entry sync failed: {exc}")
         else:

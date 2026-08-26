@@ -1,0 +1,11 @@
+# Project configuration.
+#
+# The FPL entry id is the number in the URL of your Points page:
+# fantasy.premierleague.com/entry/<NUMBER>/event/2
+# It is public information, so it lives here rather than in a shell profile.
+# FPL reissues entry ids every season, so this needs updating each August.
+#
+# Secrets do not belong here. The odds API key is read from the ODDS_API_KEY
+# environment variable.
+
+entry_id = 1807966
