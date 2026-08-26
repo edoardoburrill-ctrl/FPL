@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from fpl.app import App
+from fpl.config import InvalidEntryId, parse_entry_id
 from fpl.data.fpl_client import FPLUnavailable
 from fpl.models.projection import project_gameweek
 from fpl.models.scoring import POSITION_NAMES, verify_rules
@@ -18,14 +19,25 @@ from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizo
 from fpl.optimize.milp import prune_pool
 from fpl.optimize.chips import chip_calendar
 from fpl.report.brief import build_brief, render_markdown
-from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
+from fpl.state.ledger import CHIP_NAMES, Holding, TRANSFER_HIT_COST, SquadState
+from fpl.state.resolve import (
+    PlayerNotFound,
+    candidates,
+    parse_pick,
+    resolve_one,
+    split_picks,
+)
 
 app = typer.Typer(add_completion=False, help="Quantitative FPL advisor.")
 console = Console()
 
 
-def _app(offline: bool, entry: int | None = None) -> App:
-    return App.create(offline=offline, entry_id=entry)
+def _app(offline: bool, entry: str | int | None = None) -> App:
+    try:
+        return App.create(offline=offline, entry_id=parse_entry_id(entry))
+    except InvalidEntryId as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
 
 
 def _resolve_gameweek(ctx, gameweek: int | None) -> int:
@@ -45,7 +57,9 @@ def _name(ctx, element_id: int) -> str:
 
 @app.command()
 def sync(
-    entry: Optional[int] = typer.Option(None, help="Your FPL entry (team) id."),
+    entry: Optional[str] = typer.Option(
+        None, help="Your numeric FPL entry (team) id."
+    ),
     deep: bool = typer.Option(False, help="Also pull per-fixture minutes logs."),
     offline: bool = typer.Option(False, help="Use cached data only."),
 ) -> None:
@@ -226,6 +240,138 @@ def squad(offline: bool = typer.Option(True)) -> None:
         f"Free transfers: {state.free_transfers} · chips available: "
         f"{', '.join(state.chips_available()) or 'none'}"
     )
+
+
+@app.command("set-squad")
+def set_squad(
+    players: list[str] = typer.Argument(
+        ...,
+        help="Your fifteen players, comma or space separated. Append the price "
+             "you paid with @, e.g. 'Haaland@14.2'. Disambiguate a shared "
+             "surname with the club, e.g. 'Silva (FUL)'.",
+    ),
+    bank: float = typer.Option(0.0, help="Money in the bank, in millions."),
+    free_transfers: int = typer.Option(1, help="Free transfers available."),
+    gameweek: Optional[int] = typer.Option(None, "--gw", help="Gameweek this reflects."),
+    entry: Optional[str] = typer.Option(
+        None, help="Your numeric FPL entry id, if known."
+    ),
+    chips_used: Optional[str] = typer.Option(
+        None,
+        help="Chips already played, as name:gameweek pairs, "
+             "e.g. 'wildcard:8,bboost:12'.",
+    ),
+    offline: bool = typer.Option(True),
+) -> None:
+    """Record your squad by hand, without needing an FPL entry id.
+
+    Useful when you cannot find your entry id, and as the way to seed purchase
+    prices — which no endpoint reports retrospectively, so they can only be
+    recovered from you.
+    """
+    application = _app(offline, entry)
+    ctx = application.context()
+    pool = candidates(ctx.elements, ctx.teams)
+
+    names = split_picks(players)
+    if len(names) != 15:
+        console.print(
+            f"[red]Expected 15 players, got {len(names)}.[/red] "
+            "A squad is 2 goalkeepers, 5 defenders, 5 midfielders and 3 forwards."
+        )
+        raise typer.Exit(1)
+
+    holdings: list[Holding] = []
+    shape: dict[int, int] = {}
+    clubs: dict[str, int] = {}
+    for name in names:
+        try:
+            pick = parse_pick(name)
+            found = resolve_one(pick.query, pool)
+        except PlayerNotFound as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1)
+
+        element = ctx.element(found.element)
+        position = int(element["element_type"])
+        shape[position] = shape.get(position, 0) + 1
+        clubs[found.team] = clubs.get(found.team, 0) + 1
+        holdings.append(
+            Holding(
+                element=found.element,
+                purchase_price=(
+                    pick.purchase_price
+                    if pick.purchase_price is not None
+                    else found.now_cost
+                ),
+                purchased_gameweek=gameweek or 0,
+            )
+        )
+
+    expected_shape = {1: 2, 2: 5, 3: 5, 4: 3}
+    if shape != expected_shape:
+        readable = ", ".join(
+            f"{POSITION_NAMES[p]} {shape.get(p, 0)}" for p in (1, 2, 3, 4)
+        )
+        console.print(
+            f"[red]That is not a legal squad shape ({readable}).[/red] "
+            "FPL requires 2 GKP, 5 DEF, 5 MID, 3 FWD."
+        )
+        raise typer.Exit(1)
+
+    over = [club for club, count in clubs.items() if count > 3]
+    if over:
+        console.print(
+            f"[red]More than three players from {', '.join(over)}.[/red] "
+            "FPL allows at most three per club."
+        )
+        raise typer.Exit(1)
+
+    if len({h.element for h in holdings}) != 15:
+        console.print("[red]That squad contains duplicate players.[/red]")
+        raise typer.Exit(1)
+
+    used: dict[str, list[int]] = {}
+    if chips_used:
+        for pair in chips_used.split(","):
+            chip, _, when = pair.strip().partition(":")
+            chip = chip.strip()
+            if chip not in CHIP_NAMES or not when.strip().isdigit():
+                console.print(
+                    f"[red]Could not read chip {pair!r}.[/red] Expected "
+                    f"name:gameweek with a name from {', '.join(CHIP_NAMES)}."
+                )
+                raise typer.Exit(1)
+            used.setdefault(chip, []).append(int(when))
+
+    existing = application.load_state()
+    state = SquadState(
+        entry_id=parse_entry_id(entry) or existing.entry_id,
+        gameweek=gameweek or ctx.current_event or 0,
+        holdings=holdings,
+        bank=int(round(bank * 10)),
+        free_transfers=free_transfers,
+        chips_used=used,
+        notes="entered manually",
+    )
+    application.save_state(state)
+
+    prices = {int(e["id"]): int(e["now_cost"]) for e in ctx.elements}
+    console.print(
+        f"[green]Squad recorded[/green] for GW{state.gameweek}: 15 players worth "
+        f"£{state.squad_value(prices) / 10:.1f}m, bank £{bank:.1f}m, "
+        f"{free_transfers} free transfer(s)."
+    )
+    assumed = sum(1 for name in names if parse_pick(name).purchase_price is None)
+    if assumed:
+        console.print(
+            f"[yellow]Purchase price assumed to equal current price for "
+            f"{assumed} of 15 players.[/yellow] FPL returns only half of a "
+            "player's rise when you sell, so a wrong purchase price quietly "
+            "overstates your budget. Re-run with '@' prices for anyone you "
+            "bought at a different price, e.g. 'Haaland@14.2'."
+        )
+    console.print("Now run `fpl brief`.")
 
 
 @app.command()

@@ -32,6 +32,24 @@ export ODDS_API_KEY=...            # optional, free tier at the-odds-api.com
 export FPL_DATA_DIR=./data         # optional, where snapshots and state live
 ```
 
+Your **entry id** is the number in the URL of your Points page. It is not your
+premierleague.com account id (a UUID), and FPL reissues entry ids every season,
+so last season's will not work.
+
+You do not actually need it. `fpl sync` snapshots the player pool without one,
+and `fpl set-squad` records your squad by hand:
+
+```bash
+fpl sync                                    # no entry id needed for player data
+fpl set-squad "Raya, Sels, Gabriel@6.1, Gvardiol, ..." \
+    --bank 0.5 --free-transfers 2 --gw 3
+```
+
+Append `@price` to record what you actually **paid** for a player. FPL returns
+only half of any rise when you sell, so the selling price depends on the purchase
+price — and no endpoint reports that retrospectively, which is why the ledger has
+to be seeded once and then maintained.
+
 ## Use
 
 ```bash
@@ -40,6 +58,7 @@ fpl projections --gw 3 --top 25    # expected points table
 fpl projections --position DEF --max-cost 5.5
 fpl captain --gw 3                 # captaincy ranking with the margin to the next option
 fpl squad                          # your squad, selling prices, bank, chips, free transfers
+fpl set-squad "..." --bank 0.5     # record your squad by hand, no entry id required
 fpl explain haaland                # term-by-term breakdown of a projection
 fpl transfers --horizon 5          # multi-gameweek transfer plan
 fpl brief                          # the one command: what to do before this deadline
