@@ -441,11 +441,24 @@ the next gameweek. **This is the point at which the tool starts earning points.*
 carry-over, selling prices, bench weighting. Chips (wildcard) supported; the rest
 land in Phase 4. *Ends with:* `fpl transfers` and `fpl brief`.
 
-**Phase 3 — Rigour.** Monte Carlo match engine replacing the analytic assembly,
-proper ranked-BPS bonus, correlation-aware captaincy, bootstrap-robust transfer
-recommendations, calibration suite and the full season-replay backtest. Hyperparameters
-(`γ`, horizon, shrinkage `k`, decay `ξ`) tuned against backtest rather than intuition.
-*Ends with:* measured evidence the thing beats its baselines.
+**Phase 3 — Rigour.** *(first slice done; the finding changes what "done" means
+next)* The Monte Carlo engine (`models/simulate.py`) and ranked-BPS bonus with
+FPL's exact tie rule are built and — for the tie rule specifically — verified
+against **every real match in two full seasons (760/760)**, not just documented
+examples. A real, no-lookahead season-replay backtest (`fpl backtest`) exists
+and has been run against 2024-25. Its result is the headline of this phase: the
+projection engine beats a do-nothing baseline but currently **loses to FPL's
+own `xP`** on ranking and badly on captaincy-pick quality — see
+`DECISIONS.md` for the full numbers and the working theory (no odds data, no
+injury signal, both structural gaps in this specific backtest). Still open:
+wiring the simulation-based bonus into the fast path the optimiser uses,
+bootstrap-robust transfer recommendations, calibration reliability plots, and —
+the thing most likely to close the gap — re-running this backtest with real
+historical odds once that data source is identified. Hyperparameters (`γ`,
+horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
+are still the values chosen at build time. *Ends with:* measured evidence the
+thing beats its baselines — which now exists, and currently argues for caution,
+not confidence.
 
 **Phase 4 — Chips, automation, polish.** *(mostly done)* Bench Boost and Triple
 Captain are decided inside the MILP; Wildcard and Free Hit are evaluated by

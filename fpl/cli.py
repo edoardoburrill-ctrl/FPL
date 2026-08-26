@@ -11,6 +11,8 @@ from rich.console import Console
 from rich.table import Table
 
 from fpl.app import App
+from fpl.backtest.replay import replay_season
+from fpl.data.historical import HistoricalDataUnavailable
 from fpl.config import InvalidEntryId, parse_entry_id
 from fpl.data.fpl_client import FPLUnavailable
 from fpl.models.projection import project_gameweek
@@ -637,6 +639,49 @@ def chips(
         "this horizon may still be worth more, so widen --horizon before "
         "committing."
     )
+
+
+@app.command()
+def backtest(
+    season: str = typer.Option(
+        "2024-25", help="Historical season, e.g. 2023-24 or 2024-25."
+    ),
+    start_gw: int = typer.Option(
+        6, help="First gameweek to score (early weeks have too little history)."
+    ),
+    end_gw: Optional[int] = typer.Option(None, help="Last gameweek; default the season end."),
+) -> None:
+    """Walk a real season forward with no lookahead, and score the projections.
+
+    Uses github.com/vaastav/Fantasy-Premier-League, a public mirror of FPL's
+    own data — not the live API, and not the FPL_ENTRY_ID/fpl.toml squad this
+    tool otherwise uses. Needs network access to fetch a season the first time;
+    cached indefinitely after that, since a finished season never changes.
+
+    This validates the projection engine — minutes, team strength, rates, and
+    points assembly — against real outcomes. It does not replay the optimiser's
+    transfer decisions with a real squad and budget, which is a larger, separate
+    piece of work.
+    """
+    console.print(f"Replaying {season} from GW{start_gw}"
+                 f"{f' to GW{end_gw}' if end_gw else ''} (no lookahead)...")
+
+    def progress(gameweek: int, n: int) -> None:
+        console.print(f"  GW{gameweek}: {n} player-gameweeks scored")
+
+    try:
+        report = replay_season(season, start_gameweek=start_gw, end_gameweek=end_gw,
+                               progress=progress)
+    except HistoricalDataUnavailable as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+
+    if not report.gameweeks:
+        console.print("[yellow]No gameweeks were scored — check the season and range.[/yellow]")
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(report.summary())
 
 
 @app.command()

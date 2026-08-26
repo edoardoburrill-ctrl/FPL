@@ -164,6 +164,80 @@ gameweek is being projected (ratings, priors, team contexts); `project_gameweek`
 sums over a player's fixtures in that gameweek — so a double gameweek sums two
 and a blank sums none, with no special-casing.
 
+### `models/bps.py`
+
+Two things at very different confidence levels, and the module says so.
+`award_bonus` implements FPL's exact tie rule (standard competition ranking —
+a tie for 1st takes rank 1 twice and the next player is rank 3, not rank 2) and
+is **verified against every real match in two full seasons: 760/760**. The BPS
+point table itself is not verifiable this way — FPL publishes no machine-
+readable table, and the one historical archive available lacks the raw
+defensive-action counts needed even in principle. `partial_bps` was originally
+built as a strict lower bound on the theory that every omitted term (CBI,
+goalline clearances) only adds to the true figure; checking it against real
+data disproved that (fouls conceded is also unobserved, and subtracts), so
+`verify_plausibility` reports a residual distribution instead of asserting a
+direction. See `DECISIONS.md` for both stories.
+
+### `models/simulate.py`
+
+The Monte Carlo match engine. Where the analytic path (`points.py`) treats
+every scoring term as an independent expectation, this module draws whole
+match scenarios — a scoreline, then minutes, then goals and assists allocated
+to scorers by a minutes-weighted multinomial, then defensive actions, saves and
+cards — and computes BPS and ranks the *whole match* for bonus, using
+`bps.award_bonus`. This is what makes bonus a genuine rank rather than a normal
+approximation, and it is also what makes haul probabilities and teammate
+correlations available at all: an independent-expectation model cannot produce
+either honestly.
+
+Not wired into the optimiser's pruning path — it is too slow for that by
+design (≈2s for one 22-player fixture at 10k draws; the per-draw bonus
+allocation is a pure-Python loop and is the bottleneck). It exists for
+enriching a shortlist: `fpl explain`-style output, not `fpl transfers`.
+
+---
+
+## 3b. Historical data and the backtest
+
+### `data/historical.py`
+
+Real per-gameweek FPL data for past seasons, from a public archive
+(github.com/vaastav/Fantasy-Premier-League) — not the live API, and the only
+network dependency in this codebase that isn't `fantasy.premierleague.com`.
+Cached indefinitely, since a finished season never changes. `iter_match_bps`
+groups player-rows by fixture to reconstruct real per-match BPS and bonus
+without needing to parse the fixtures file's embedded stats blob.
+
+### `backtest/adapter.py`
+
+Converts historical rows into exactly the shapes `build_context` and
+`project_gameweek` already consume from the live API, so the backtest exercises
+the real pipeline rather than a parallel one. `snapshot_as_of(data, gameweek)`
+is the load-bearing function: it aggregates only rows from gameweeks strictly
+before the target. A snapshot that saw the target gameweek's own results would
+not be predicting anything.
+
+One real consequence of this design, not a bug: a player is only known to a
+snapshot once he has appeared in an already-played gameweek, since the archive
+carries no separate roster listing the way `bootstrap-static` does live. The
+gameweek-1 snapshot is therefore empty, which is why `replay_season` defaults
+to starting at gameweek 6.
+
+### `backtest/replay.py`, `backtest/metrics.py`
+
+Walks a season forward gameweek by gameweek, no lookahead, scoring the real
+pipeline's projections against real `total_points` and against FPL's own `xP`
+— the baseline this project's own plan named as the bar to beat. Three
+comparisons: MAE against actual, per-gameweek Spearman rank correlation, and a
+concrete captaincy stand-in (`top_pick_points`: sum of real points from each
+gameweek's single highest-projected player).
+
+**Deliberately does not replay the optimiser.** No transfers, no squad, no
+budget — this validates the projection engine specifically, which is the layer
+everything else depends on. See `DECISIONS.md` for why that scope was chosen
+and what the first real run found.
+
 ---
 
 ## 4. The optimiser
@@ -286,6 +360,16 @@ Optimiser tests use deliberately tiny pools. Whether the rules are enforced is
 proved as well by a 42-player league as a 700-player one, and proved in a second
 rather than a minute.
 
+**One deliberate exception.** `data/historical.py` and the backtest it feeds are
+tested offline like everything else — `test_backtest.py` uses small embedded
+fixtures, not the live archive. But the claims that actually matter here (the
+tie rule against 760 real matches; the season backtest's real MAE and Spearman
+numbers) come from interactive runs against the real archive, recorded in
+`DECISIONS.md`, not re-derived by the test suite on every run. The archive is
+more stable than the live FPL API but still an external dependency; baking a
+network call into `pytest` would violate the same policy this section opened
+with, for a much larger and slower fetch.
+
 ---
 
 ## 8. Where the seams are
@@ -296,11 +380,11 @@ If you are extending this, these are the intended insertion points.
 |---|---|
 | Add a data source | a client in `data/`, then wire it in `app.py` |
 | Change how points are computed | `models/points.py`, one term at a time |
-| Replace the bonus model | `expected_bonus` in `models/points.py` |
-| Add the Monte Carlo engine | new `models/simulate.py`, called by `projection.py` |
+| Replace the bonus model | `expected_bonus` in `models/points.py`, or wire `models/simulate.py`'s ranked bonus into the fast path |
 | Change what the optimiser maximises | the objective block in `milp.py` |
 | Add a chip | `milp.py` if it adds a term, `chips.py` if it restructures |
 | Add an output format | `report/`, reusing `build_brief` |
+| Improve the backtest | `backtest/adapter.py` for a new data source, `backtest/metrics.py` for a new comparison |
 
 The one thing not to do is compute points anywhere except through
 `ScoringRules`. That is what keeps `fpl verify` meaningful.

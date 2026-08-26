@@ -22,7 +22,7 @@ Documentation:
 | 0 | Data clients, snapshot store, squad ledger, CLI | done |
 | 1 | Projection engine: minutes, team goals, player rates, points | done |
 | 2 | Multi-gameweek transfer optimiser | done |
-| 3 | Monte Carlo engine, ranked bonus, calibration, backtest | planned |
+| 3 | Monte Carlo engine, ranked bonus, real backtest | first slice done — see below |
 | 4 | Chips, scheduled automation | done (price prediction pending) |
 
 ## Install
@@ -77,6 +77,7 @@ fpl brief                          # the one command: what to do before this dea
 fpl brief --markdown               # same, as markdown for a report or job summary
 fpl chips --horizon 8              # when to play each chip, measured in points
 fpl chips --restructuring          # also evaluate Wildcard and Free Hit (slow)
+fpl backtest --season 2024-25      # replay a real season, no lookahead, score it
 fpl prices                         # overnight price changes and transfer momentum
 fpl verify                         # replay history to prove the scoring rules are right
 ```
@@ -88,6 +89,22 @@ Solve times on a full player pool: `brief` and `transfers` take around twenty
 seconds, `chips` around two minutes over six gameweeks. `--restructuring` adds a
 full re-solve per candidate gameweek and takes considerably longer, which is why
 it is opt-in.
+
+## Backtest result — read before trusting a captaincy pick
+
+`fpl backtest` replayed 2024-25 (GW6–38, no lookahead) through the real
+projection engine. The bonus tie-break rule is verified exactly against every
+real match in two seasons (760/760). The projection engine itself is more
+mixed: it beats a do-nothing baseline, but currently **loses to FPL's own
+displayed `xP`** on ranking, and badly on picking the single best player each
+week — it picked Mohamed Salah as the single best player in roughly 20 of 33
+gameweeks, while FPL's `xP` correctly rotated to whoever had the standout
+fixture that week. The likely cause: with no odds data in this backtest (the
+market-anchored path was never exercised), the fallback team-strength model
+doesn't swing a fixture's goal expectation sharply enough to let a good-fixture
+week overtake a highly-rated player's season-long baseline. Full evidence and
+what that means for trusting `fpl brief`'s captain pick right now:
+[`docs/DECISIONS.md`](docs/DECISIONS.md) and [`docs/TODO.md`](docs/TODO.md).
 
 ## Automation
 

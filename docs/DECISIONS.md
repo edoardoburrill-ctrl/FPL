@@ -257,11 +257,148 @@ about a statistical model.
 
 ---
 
+## Bonus tie-break rule: verified against every real match in two seasons
+
+**Decided:** standard competition ranking ("1224" — a tie for 1st means both
+take rank 1 and the next player is rank 3, not rank 2), sourced from FPL's own
+published worked examples, not inferred.
+
+This one did not have to stay a guess. `data/historical.py` groups two seasons
+of real per-fixture BPS and bonus data (760 real matches, 2023-24 and 2024-25).
+`award_bonus` reproduces the actual bonus award in **760 / 760 — 100%**. This is
+the strongest verification any component in this codebase has: not three
+documented examples, every real match played across two seasons.
+
+**Caught by testing, not review.** The first implementation had the rank→bonus
+payout table inverted — `{3: 3, 2: 2, 1: 1}` (a coincidental pass-through)
+instead of `{1: 3, 2: 2, 3: 1}` (rank 1 pays 3). It silently handed bonus to the
+*worst* BPS performer in every ungrouped case. The three worked-example tests
+written immediately after caught it before it reached the real-data check at
+all — which is the point of writing the narrow test before reaching for the big
+one.
+
+---
+
+## The BPS table's lower bound turned out not to be a bound
+
+**Decided, then undone:** `partial_bps` was designed as a strict lower bound —
+every constant included was meant to be one no larger than the true
+contribution, with CBI and goalline clearances the only omissions, both
+additive, so the partial figure could only undershoot the real `bps`.
+
+Checking it against two real seasons disproved the premise: **23-29% of real
+stat lines had the partial estimate *exceed* the real BPS**, including plain
+appearance-only rows with no goals, assists, or cards. The residuals ran as low
+as −20. The lower-bound property assumed the only unobserved terms were
+additive; it missed that **fouls conceded** — and, in these older archive
+seasons specifically, the since-removed tackled-penalty — are also unobserved
+and subtract.
+
+The fix was not to tune the constants against this signal. Tuning against a
+confounded target (goals could include unflagged penalties at old rates; "zero
+other stats" rows still have invisible CBI content that can only ever push the
+residual in the *other* direction) would trade one unfounded number for
+another. Instead `verify_lower_bound` became `verify_plausibility`: it reports
+the residual distribution and flags only extreme outliers, rather than
+asserting a direction the evidence does not support. The underlying BPS
+constants are unchanged and remain exactly as uncertain as before — this
+correction is about not overclaiming what was checked, not about having fixed
+the table.
+
+---
+
+## The backtest validates the projection engine, not the optimiser
+
+**Decided:** `fpl backtest` replays a real season's projections against real
+outcomes with a strict no-lookahead cutoff, and scores them against FPL's own
+`xP` — but it does not replay transfers, budget, or squad selection.
+
+**Why the smaller scope was the right call.** A full replay — the optimiser
+making real transfer decisions against a real starting squad and budget across
+a season — is what PLAN.md originally described, and it is meaningfully bigger:
+it needs the price-history-aware selling-price ledger reconstructed for a whole
+season, a decision at every deadline, and a much larger validation surface where
+a bug anywhere in the optimiser can masquerade as a modelling problem. The
+projection engine is the layer everything else is built on, so it is the
+correct thing to validate *first* and in isolation. A full optimiser replay
+remains open, tracked below.
+
+**A real result, not a projected one — and not a flattering one.** Run against
+2024-25, GW6 through GW38 (33 gameweeks, 9,858 player-gameweeks):
+
+```
+MAE          ours=1.842  FPL xP=1.785  season-mean baseline=2.094
+Spearman rho ours=0.345  FPL xP=0.570  (per-gameweek, averaged)
+Top-pick pts ours=197    FPL xP=360    (sum of real points from each week's #1 pick)
+```
+
+The honest reading: this beats doing nothing (MAE below the season-mean
+baseline), but it does **not** currently beat FPL's own `xP` — close on MAE,
+clearly behind on ranking quality, and badly behind on the metric that matters
+most for captaincy (picking the single best player each week returned about
+half the points FPL's own number would have).
+
+**The first explanation reached for was wrong, and checking it found the real
+one.** Before looking at a single pick, the natural guess was "no odds data,
+no injury signal, both structural gaps in this backtest, not necessarily the
+live tool." That is a reasonable-sounding story and it is not what the evidence
+shows. Printing the actual top pick each week (see the table this session's
+diagnostic produced) shows no pattern of picking an injured or suspended player
+who then scores zero — the pattern is completely different and much more
+specific:
+
+```
+GW  our pick              pts   xP pick               pts
+ 9  Erling Haaland          6   Chris Wood            13
+10  Cole Palmer             3   Mohamed Salah          9
+17  Matheus Cunha           9   Mohamed Salah         21
+18–28  Mohamed Salah      (9 of 11 weeks)   Mohamed Salah      (matches ours 7 of 11)
+29  Chris Wood              2   Bruno Fernandes       17
+30  Mohamed Salah           3   Anthony Elanga        11
+31  Mohamed Salah           2   Jacob Murphy          16
+33  Mohamed Salah           3   Leandro Trossard       8
+35  Mohamed Salah           2   Yoane Wissa            7
+36  Bryan Mbeumo             6   Kevin Schade          11
+38  Mohamed Salah          10   Jarrod Bowen          13
+```
+
+**The model picked Mohamed Salah as the single best player in roughly 20 of 33
+gameweeks.** FPL's `xP` did not — it rotated to whoever had the standout
+fixture that specific week (Wood, Elanga, Murphy, Trossard, Wissa, Bowen — a
+different name most weeks). This is not a selection-logic bug; each gameweek is
+projected independently with no memory of prior picks. It is the projection
+engine itself lacking enough **week-to-week fixture reactivity**: once a
+player's season-long attacking share is fitted high enough, he dominates the
+projection almost every week regardless of whether that particular fixture is
+good or poor, because the fallback fitted-ratings team-strength model — the
+only one exercised here, since no historical odds exist to anchor it — updates
+attack/defence ratings too slowly and too smoothly to swing a specific
+fixture's goal expectation as sharply as it should.
+
+This sharpens, rather than replaces, the original hypothesis. The root cause is
+still "no odds data" — but the mechanism is now evidenced, not assumed: it is
+specifically the fallback model's *lack of fixture-to-fixture swing*, not a
+missing injury flag, that is starving the top pick of the signal it needs to
+rotate. The injury-signal gap likely still costs some accuracy at the margins,
+but the diagnostic gives it no support as the dominant factor here, and it is
+downgraded to secondary rather than co-equal.
+
+Confirming this needs a backtest run with real historical odds anchoring the
+team-strength model, which is future work — not something to claim done now.
+What is not in question is the number itself: on this test, as it stands today,
+**the model should not be trusted over FPL's own displayed expected points for
+captaincy**, and `docs/TODO.md` says so.
+
+---
+
 ## Still open
 
-- **Bonus** is a normal approximation on expected BPS. Bonus is a within-match
-  ranking; the honest treatment needs the Monte Carlo engine. This is the weakest
-  term in the projection and the first thing Phase 3 replaces.
+- **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
+  still a normal approximation on expected BPS. `models/simulate.py` now
+  computes bonus properly — by simulating the match and ranking real BPS
+  draws with the verified tie rule — but it is not yet wired into the
+  optimiser's pruning path, which needs the fast path's speed. It is available
+  today for `fpl explain`-style enrichment of a shortlist.
 - **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
   squad revert is not modelled.
 - **Bench weights** are constants by position rather than the auto-sub

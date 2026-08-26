@@ -20,19 +20,30 @@ or impossible to do later.
       FPL returns only half of a player's price rise when you sell, and no
       endpoint reports purchase prices retrospectively. Every gameweek this waits
       is drift you cannot recover.
-- [ ] Get a free odds API key at the-odds-api.com and
-      `export ODDS_API_KEY=...`. Optional, but it is the single largest accuracy
-      gain available.
+- [ ] **Get a free odds API key at the-odds-api.com and
+      `export ODDS_API_KEY=...`.** No longer just "nice to have": the first real
+      backtest (below) showed the model losing to FPL's own displayed
+      expected-points on captaincy while running *without* odds data. Getting
+      the market-anchored path actually exercised is the most likely fix.
 - [ ] Run `fpl verify` once. It proves the scoring rules reproduce real history.
       If it fails, stop and tell me — every projection depends on it.
 
-## Before Phase 3 lands (calibration and backtest)
+## Read this before trusting a captaincy pick
+
+`fpl backtest --season 2024-25` replayed a real season with no lookahead. It
+beats guessing, but it currently **loses to FPL's own expected-points number**
+on ranking quality, and badly on picking the single best player each week (197
+points captured over a season vs 360 for trusting FPL's own figure) — it picked
+Mohamed Salah as the top pick in roughly 20 of 33 gameweeks regardless of that
+week's specific fixture, while FPL's number correctly rotated to the week's
+actual standout. Most likely cause: no odds data means the fallback
+team-strength model doesn't swing sharply enough fixture to fixture. Until this
+closes — most likely by validating with real odds data — **for captaincy,
+weigh the model's pick against FPL's own displayed `xP`, don't defer to it
+blindly.** Full evidence: `docs/DECISIONS.md`.
 
 - [ ] Tell me any chips you have already played, and in which gameweek.
       Otherwise the chip planner will offer you chips you no longer have.
-- [ ] Read the backtest result when I deliver it, and decide whether you trust
-      the model over your own judgement on close calls. Until then the numbers
-      are plausible, not proven.
 
 ## When automation goes live (Phase 4)
 
