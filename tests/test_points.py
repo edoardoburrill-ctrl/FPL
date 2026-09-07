@@ -1,14 +1,18 @@
 import numpy as np
 import pytest
+from scipy.stats import poisson
 
 from fpl.models.minutes import MinutesForecast
 from fpl.models.points import (
     PlayerRates,
+    bonus_variance,
     clean_sheet_probability_on_pitch,
+    conceded_penalty_variance,
     expected_bonus,
     expected_conceded_penalty,
     expected_saves_points,
     project_player,
+    saves_points_variance,
     threshold_probability,
 )
 from fpl.models.scoring import DEF, FWD, GK, MID, ScoringRules
@@ -108,3 +112,70 @@ def test_projection_explains_itself():
     rates = PlayerRates(goals_share=0.3, assists_share=0.1, bps_per_90=25)
     text = project_player(1, FWD, NAILED, rates, 1.8, 1.0, _conceded(), RULES).explain()
     assert "TOTAL" in text and "appearance" in text
+
+
+def test_saves_variance_matches_a_brute_force_sum():
+    # Cross-check the closed-form floor(S/3) variance against a direct sum over
+    # the Poisson pmf, computed independently of the implementation.
+    lam = 4.5
+    s = np.arange(0, 60)
+    pmf = poisson.pmf(s, lam)
+    units = s // 3
+    mean = np.sum(pmf * units)
+    expected = np.sum(pmf * units**2) - mean**2
+    assert np.isclose(saves_points_variance(lam, 3), expected, atol=1e-6)
+
+
+def test_saves_variance_is_zero_when_no_saves_expected():
+    assert saves_points_variance(0.0) == 0.0
+
+
+def test_conceded_penalty_variance_matches_a_hand_computed_case():
+    # Two goals conceded with certainty is a point mass: zero variance.
+    pmf = np.array([0.0, 0.0, 1.0])
+    assert np.isclose(conceded_penalty_variance(pmf, 1.0), 0.0)
+    # A coin flip between 0 and 2 conceded gives floor(n/2) in {0, 1} with p=0.5
+    # each, i.e. a Bernoulli(0.5): variance 0.25.
+    pmf = np.array([0.5, 0.0, 0.5])
+    assert np.isclose(conceded_penalty_variance(pmf, 1.0), 0.25)
+
+
+def test_bonus_variance_is_nonnegative_and_zero_without_bps():
+    assert bonus_variance(0.0) == 0.0
+    for bps in (5.0, 20.0, 30.0, 60.0):
+        assert bonus_variance(bps) >= 0.0
+
+
+def test_bonus_variance_recovers_a_near_certain_outcome():
+    # Far below every threshold: bonus is (almost) certainly zero, so variance
+    # should be small; comfortably above the top threshold: bonus is (almost)
+    # certainly 3, so variance should again be small. Mid-range is genuinely
+    # uncertain and should have materially higher variance than either tail.
+    low = bonus_variance(1.0)
+    mid = bonus_variance(29.0)
+    high = bonus_variance(200.0)
+    assert mid > low
+    assert mid > high
+
+
+def test_project_player_reports_a_nonnegative_variance_per_term():
+    rates = PlayerRates(
+        goals_share=0.25, assists_share=0.12, saves_per_90=3.0,
+        defcon_per_90=8.0, bps_per_90=22.0, yellow_per_90=0.2, red_per_90=0.02,
+    )
+    projection = project_player(1, DEF, NAILED, rates, 1.6, 1.1, _conceded(), RULES)
+    assert projection.variance
+    assert all(v >= 0.0 for v in projection.variance.values())
+    assert projection.points_variance == pytest.approx(sum(projection.variance.values()))
+    assert projection.points_sd == pytest.approx(np.sqrt(projection.points_variance))
+
+
+def test_a_starter_has_lower_relative_variance_than_a_cameo_risk():
+    """A nailed-on player's points are far more predictable, in relative terms,
+    than a rotation-risk cameo player's — the minutes uncertainty dominates."""
+    rates = PlayerRates(goals_share=0.25, assists_share=0.1, bps_per_90=22)
+    starter = project_player(1, MID, NAILED, rates, 1.6, 1.1, _conceded(), RULES)
+    cameo = project_player(2, MID, CAMEO, rates, 1.6, 1.1, _conceded(), RULES)
+    starter_cv = starter.points_sd / max(starter.expected_points, 1e-9)
+    cameo_cv = cameo.points_sd / max(cameo.expected_points, 1e-9)
+    assert cameo_cv > starter_cv

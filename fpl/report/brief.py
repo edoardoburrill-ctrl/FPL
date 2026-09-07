@@ -8,7 +8,9 @@ from typing import Mapping, Sequence
 
 from fpl.models.points import PlayerProjection
 from fpl.models.projection import ProjectionContext
-from fpl.optimize.milp import Decision, Plan, Player, optimise, prune_pool
+from fpl.optimize.milp import Plan, Player, optimise, prune_pool
+from fpl.optimize.robustness import RobustnessReport, transfer_stability
+from fpl.optimize.transfers import TransferMove, pair_transfers
 from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
 # A transfer worth less than this over the whole horizon is noise, not an edge.
@@ -16,15 +18,14 @@ MEANINGFUL_GAIN = 0.75
 # Two captaincy options this close are a coin-flip, whatever the ranking says.
 COIN_FLIP_MARGIN = 0.35
 
-
-@dataclass
-class TransferMove:
-    out_element: int
-    in_element: int
-    out_name: str
-    in_name: str
-    out_sell_price: int
-    in_buy_price: int
+__all__ = [
+    "Brief",
+    "TransferMove",
+    "pair_transfers",
+    "deadline_for",
+    "build_brief",
+    "render_markdown",
+]
 
 
 @dataclass
@@ -46,6 +47,14 @@ class Brief:
     bank: float
     chips_available: list[str]
     warnings: list[str] = field(default_factory=list)
+    # Set only when `build_brief` was asked to resample (`stability_resamples`
+    # > 0); None otherwise. See `optimize/robustness.py`.
+    stability: RobustnessReport | None = None
+
+    def stability_of(self, move: TransferMove) -> float | None:
+        if self.stability is None:
+            return None
+        return self.stability.frequency_of(move.out_element, move.in_element)
 
     @property
     def recommends_transfer(self) -> bool:
@@ -72,34 +81,6 @@ def deadline_for(ctx: ProjectionContext, gameweek: int) -> datetime | None:
     return None
 
 
-def pair_transfers(
-    decision: Decision, players: Mapping[int, Player]
-) -> list[TransferMove]:
-    """Pair sales with purchases by position, which is how a manager reads them.
-
-    The optimiser only knows it bought three players and sold three; presenting
-    that as "sell X, buy Y" needs the positional pairing that the squad-shape
-    constraint guarantees exists.
-    """
-    outgoing = sorted(decision.transfers_out, key=lambda e: players[e].position)
-    incoming = sorted(decision.transfers_in, key=lambda e: players[e].position)
-
-    moves: list[TransferMove] = []
-    for out_element, in_element in zip(outgoing, incoming):
-        out_player, in_player = players[out_element], players[in_element]
-        moves.append(
-            TransferMove(
-                out_element=out_element,
-                in_element=in_element,
-                out_name=out_player.name,
-                in_name=in_player.name,
-                out_sell_price=out_player.sell_price,
-                in_buy_price=in_player.buy_price,
-            )
-        )
-    return moves
-
-
 def build_brief(
     ctx: ProjectionContext,
     state: SquadState,
@@ -111,8 +92,17 @@ def build_brief(
     max_hits: int = 2,
     wildcard_gameweek: int | None = None,
     time_limit: float = 90.0,
+    stability_resamples: int = 0,
+    stability_seed: int | None = None,
+    stability_time_limit: float = 15.0,
 ) -> Brief:
-    """Solve the horizon, then solve it again holding, and compare."""
+    """Solve the horizon, then solve it again holding, and compare.
+
+    ``stability_resamples`` is opt-in and 0 by default: it re-solves the whole
+    horizon that many extra times against bootstrap-resampled projections
+    (`optimize/robustness.py`), so it directly multiplies solve time. Worth
+    turning on before acting on a marginal-looking transfer, not on every run.
+    """
     gameweek = gameweeks[0]
     pool = prune_pool(players, gameweeks, always_include=state.element_ids)
     by_id = {p.element: p for p in pool}
@@ -141,6 +131,19 @@ def build_brief(
             captain_margin=0.0, captain_alternatives=[], starting=[], bench=[],
             hits=0, free_transfers=state.free_transfers, bank=state.bank / 10,
             chips_available=state.chips_available(gameweek), warnings=warnings,
+        )
+
+    stability: RobustnessReport | None = None
+    if stability_resamples > 0:
+        stability = transfer_stability(
+            pool, projections, gameweeks,
+            state.element_ids, state.bank, state.free_transfers,
+            n_resamples=stability_resamples,
+            seed=stability_seed,
+            time_limit=stability_time_limit,
+            discount=discount,
+            max_hits_per_gameweek=max_hits,
+            wildcard_gameweek=wildcard_gameweek,
         )
 
     if not plan.proven_optimal:
@@ -196,6 +199,7 @@ def build_brief(
         bank=decision.bank,
         chips_available=state.chips_available(gameweek),
         warnings=warnings,
+        stability=stability,
     )
 
 
@@ -229,11 +233,15 @@ def render_markdown(
         )
     else:
         for move in brief.moves:
+            confidence = ""
+            frequency = brief.stability_of(move)
+            if frequency is not None:
+                confidence = f" (chosen in {frequency:.0%} of bootstrap resamples)"
             lines.append(
                 f"- Sell **{names.get(move.out_element, move.out_element)}** "
                 f"(£{move.out_sell_price/10:.1f}m) → buy "
                 f"**{names.get(move.in_element, move.in_element)}** "
-                f"(£{move.in_buy_price/10:.1f}m)"
+                f"(£{move.in_buy_price/10:.1f}m){confidence}"
             )
         cost = (
             f"{brief.hits} hit ({-brief.hits * TRANSFER_HIT_COST} pts)"
@@ -250,6 +258,16 @@ def render_markdown(
             lines.append("")
             lines.append(
                 "> That is inside the model's own noise. Holding is defensible."
+            )
+        unstable = [
+            m for m in brief.moves
+            if (brief.stability_of(m) or 1.0) < 0.6
+        ]
+        if unstable:
+            lines.append("")
+            lines.append(
+                "> Chosen in under 60% of bootstrap resamples — a coin-flip that "
+                "should not cost a hit, even where it clears the noise bar above."
             )
 
     lines += ["", "## Team", "", "| | Player | xPts |", "|---|---|---|"]

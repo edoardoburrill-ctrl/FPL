@@ -391,6 +391,41 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Bootstrap robustness resamples the analytic path, not the Monte Carlo engine
+
+**Decided:** `optimize/robustness.py` re-solves the horizon against
+bootstrap-resampled point estimates, drawn from an analytic per-term
+variance (`PlayerProjection.variance` in `models/points.py`) added
+specifically for this.
+
+**Alternative:** use `models/simulate.py`'s existing Monte Carlo samples as
+the resampling distribution instead of deriving a new analytic variance.
+
+The Monte Carlo engine already produces a full sample of points per player
+per fixture, which would seem to make a bespoke variance term redundant. It
+is documented elsewhere in this codebase as costing roughly 2 seconds per
+fixture at 10,000 draws, with the per-draw bonus allocation as a pure-Python
+bottleneck — and `transfer_stability` needs to re-solve the *entire
+horizon's MILP*, not just re-read a projection, for every one of dozens of
+resamples. Paying the simulation cost inside that loop would put a single
+`fpl brief --stability 20` run at minutes even before the solver starts,
+which defeats the point of an opt-in check meant to be run before acting on
+a marginal transfer.
+
+The chosen alternative — deriving each breakdown term's variance from the
+same distributional assumption its mean already uses (Poisson for goals,
+Bernoulli for clean sheets, the concession pmf directly for goals conceded,
+and so on) — costs essentially nothing extra per projection and needs no new
+assumption beyond ones the mean computation already makes. The cost is
+real: summing per-term variances as independent ignores the same
+correlations (a goal raises bonus odds too) that make the joint Monte Carlo
+draws valuable elsewhere, so this understates true variance somewhat. That
+is an acceptable trade for a check whose job is to separate "clearly a real
+edge" from "coin-flip, don't spend a hit on it" — not to produce a
+publishable uncertainty interval.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is

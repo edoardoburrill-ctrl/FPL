@@ -157,6 +157,17 @@ approximation on expected BPS. Bonus is a within-match ranking and the honest
 treatment needs simulation. It is monotone and roughly calibrated, and it is the
 first thing Phase 3 replaces.
 
+Every term also carries a **variance**, alongside its mean, in
+`PlayerProjection.variance` — derived from the same distributional assumption
+the mean already makes for that term (Poisson for goals/assists/cards,
+Bernoulli for clean sheets and defensive contributions, the on-pitch
+concession pmf for goals conceded, the normal-threshold approximation for
+bonus), not a fitted or guessed constant. `points_variance` sums the terms
+as independent, which is a simplification in the same spirit as the mean
+breakdown's own term-by-term independence. This exists for
+`optimize/robustness.py`'s bootstrap resampling, not for the mean projection
+itself — nothing in the analytic points assembly reads it back.
+
 ### `models/projection.py`
 
 The pipeline. `build_context` fits everything that does not depend on which
@@ -291,6 +302,46 @@ Free Hit is currently evaluated with wildcard semantics, which is an **upper
 bound** on its value because the squad revert is not modelled. Stated in the
 code, not glossed.
 
+### `optimize/transfers.py`
+
+`TransferMove` and `pair_transfers`, pairing raw buy/sell decisions into
+"sell X, buy Y" moves by position. Lives here rather than in `report/`
+because `optimize/robustness.py` needs it too, and `optimize` must not
+depend on `report` (§1) — a report-layer utility two optimiser-layer callers
+both need belongs to the lower layer, not the higher one.
+
+### `optimize/robustness.py`
+
+The MILP optimises against a single point estimate per player-gameweek.
+`transfer_stability` asks a cheaper question instead: re-solve the horizon
+against `n_resamples` bootstrap draws of the projections — each player's
+point estimate perturbed by a normal draw from its own projection variance
+(`PlayerProjection.points_variance`, `models/points.py`) — and report what
+fraction of resamples chose each transfer move. A move chosen in 95% of
+resamples is a real edge; one chosen in 40% is a coin-flip that should not
+cost a hit.
+
+This deliberately does not touch `models/simulate.py`'s Monte Carlo engine:
+that draws whole joint match scenarios and is too slow to re-run per
+resample (≈2s per fixture at 10k draws, and a resample re-solves the *whole
+horizon's* MILP on top of that). Resampling the analytic path's point
+estimates against their own analytic variance is a different, cheaper
+approximation — it captures projection uncertainty, not the correlation
+structure between teammates the Monte Carlo engine would add. Opt-in via
+`stability_resamples` on `build_brief` (`--stability` on `fpl brief` /
+`fpl transfers`) because it multiplies solve time by roughly that count; 0
+by default.
+
+Each term in `PlayerProjection.variance` is derived analytically from the
+same distributional assumptions the mean already uses — Poisson for goals,
+assists and cards; Bernoulli for clean sheets and defensive contributions;
+the on-pitch concession pmf directly for goals conceded; the same
+normal-threshold approximation as `expected_bonus` for bonus — rather than
+an arbitrary noise constant. Terms are then summed as if independent, which
+understates the true variance somewhat (a player who scores is also more
+likely to pick up bonus), but is a large improvement over treating every
+projection as certain, which was the only alternative.
+
 ---
 
 ## 5. State
@@ -385,6 +436,8 @@ If you are extending this, these are the intended insertion points.
 | Add a chip | `milp.py` if it adds a term, `chips.py` if it restructures |
 | Add an output format | `report/`, reusing `build_brief` |
 | Improve the backtest | `backtest/adapter.py` for a new data source, `backtest/metrics.py` for a new comparison |
+| Change a term's variance model | the matching `*_variance` helper in `models/points.py`, next to the mean it corresponds to |
+| Change how transfer stability is judged | `optimize/robustness.py`, `resample_players` for the noise model or `transfer_stability` for the solve loop |
 
 The one thing not to do is compute points anywhere except through
 `ScoringRules`. That is what keeps `fpl verify` meaningful.

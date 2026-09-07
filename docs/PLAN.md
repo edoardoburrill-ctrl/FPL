@@ -450,9 +450,13 @@ and has been run against 2024-25. Its result is the headline of this phase: the
 projection engine beats a do-nothing baseline but currently **loses to FPL's
 own `xP`** on ranking and badly on captaincy-pick quality — see
 `DECISIONS.md` for the full numbers and the working theory (no odds data, no
-injury signal, both structural gaps in this specific backtest). Still open:
-wiring the simulation-based bonus into the fast path the optimiser uses,
-bootstrap-robust transfer recommendations, calibration reliability plots, and —
+injury signal, both structural gaps in this specific backtest). Bootstrap-robust
+transfer recommendations (§4, "Robustness") are now built — `optimize/robustness.py`,
+opt-in via `--stability` on `fpl brief`/`fpl transfers` — using an analytic
+per-term variance now carried on every projection (`PlayerProjection.points_variance`
+in `models/points.py`), not a Monte Carlo resample, since the full simulation is
+too slow to run dozens of times per brief. Still open: wiring the simulation-based
+bonus into the fast path the optimiser uses, calibration reliability plots, and —
 the thing most likely to close the gap — re-running this backtest with real
 historical odds once that data source is identified. Hyperparameters (`γ`,
 horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
