@@ -295,8 +295,11 @@ max  Σ_t γ^t [ Σ_p EP_{p,t}·(y_{p,t} + c_{p,t}) + Σ_p β_{p,t}·EP_{p,t}·(
 - `γ ≈ 0.85` per gameweek: future projections are less reliable and future plans get
   revised, so near-term points are worth more than distant ones. `γ` is a tuned
   hyperparameter, validated in backtest — not a guess.
-- `β_{p,t}` is the bench weight: `P(this bench player is auto-subbed in)`, computed
-  from the minutes model, rather than an arbitrary constant.
+- `β_{p,t}` is the bench weight: `P(this bench player is auto-subbed in)`. The
+  player-specific half — whether *he* would actually get minutes if summoned —
+  is computed from the minutes model's `p_appears`, rather than an arbitrary
+  constant; the other half, whether some starter's slot needs replacing at all
+  this gameweek, is still a tuned constant per position (see `DECISIONS.md`).
 
 **Constraints:**
 

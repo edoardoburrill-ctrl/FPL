@@ -36,9 +36,12 @@ XI_MIN = {1: 1, 2: 3, 3: 0, 4: 1}
 XI_MAX = {1: 1, 2: 5, 3: 5, 4: 3}
 MAX_PER_CLUB = 3
 
-# Probability an unused bench player is pulled into the eleven by an auto-sub.
-# Bench points are real but heavily discounted; Phase 3 replaces this constant
-# with the auto-sub probability implied by the minutes model.
+# Fallback probability an unused bench player is pulled into the eleven by an
+# auto-sub, used only when a player carries no gameweek-specific estimate.
+# Real callers (see `optimize/inputs.py`) supply `Player.bench_weight` from the
+# minutes model instead: a nailed starter tactically left out of the XI and a
+# genuine fringe player are not equally likely to be summoned by an auto-sub,
+# and a single constant per position could not tell them apart.
 BENCH_WEIGHT = {1: 0.06, 2: 0.13, 3: 0.13, 4: 0.13}
 
 # Token objective weight on holding free transfers; see the note where it is used.
@@ -56,9 +59,17 @@ class Player:
     sell_price: int  # what *you* would get for him, from the ledger
     points: Mapping[int, float]  # gameweek -> expected points
     name: str = ""
+    # gameweek -> P(this player is pulled into the XI by an auto-sub if left on
+    # the bench). Optional: falls back to a per-position constant when absent.
+    bench_weight: Mapping[int, float] = field(default_factory=dict)
 
     def ep(self, gameweek: int) -> float:
         return float(self.points.get(gameweek, 0.0))
+
+    def bench(self, gameweek: int) -> float:
+        if gameweek in self.bench_weight:
+            return float(self.bench_weight[gameweek])
+        return BENCH_WEIGHT.get(self.position, 0.12)
 
 
 @dataclass
@@ -324,7 +335,7 @@ def optimise(
             points = player.ep(gameweek)
             if points == 0:
                 continue
-            bench = BENCH_WEIGHT.get(player.position, 0.12)
+            bench = player.bench(gameweek)
             pid = player.element
             contributions.append(weight * points * start[pid][t])
             if t in captain[pid]:

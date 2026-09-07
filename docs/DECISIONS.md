@@ -391,6 +391,35 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Bench weight: the minutes model's own appearance chance, not a flat constant
+
+**Decided:** `Player.bench_weight` now carries a per-player, per-gameweek P(auto-subbed
+in), computed in `optimize/inputs.py` as `AUTO_SUB_TRIGGER_PROBABILITY[position] *
+p_appears` — the minutes model's own probability that this specific player gets
+minutes at all. `Player.bench()` falls back to the old flat constant only when no
+gameweek-specific weight is supplied (kept for tests and callers that build a
+`Player` by hand).
+
+**Alternative:** the flat per-position constant this replaces (`BENCH_WEIGHT` in
+`optimize/milp.py`, still there as the fallback).
+
+A flat constant cannot distinguish a nailed starter the optimiser benched only
+because his formation slot is full (say, a fifth defender when the eleven wants
+four) from a genuine fringe player who rarely gets minutes at all — yet the first
+is exactly who a real auto-sub would actually summon. `AUTO_SUB_TRIGGER_PROBABILITY`
+is calibrated so a bench player with a coin-flip appearance chance (`p_appears =
+0.5`) reproduces the old constant almost exactly (0.06/0.13 for GK/outfield), so this
+is a strict refinement of the existing calibration rather than a new guess.
+
+**What is still a constant.** The *other* half of an auto-sub — P(a specific
+starter's slot actually needs replacing this gameweek) — remains a flat
+per-position number, `AUTO_SUB_TRIGGER_PROBABILITY`. Modelling that properly would
+need the joint minutes distribution of the whole starting eleven, which the
+optimiser does not have at pruning time (the eleven itself is a decision variable).
+Flagged below as still open, not silently assumed solved.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -401,8 +430,13 @@ captaincy**, and `docs/TODO.md` says so.
   today for `fpl explain`-style enrichment of a shortlist.
 - **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
   squad revert is not modelled.
-- **Bench weights** are constants by position rather than the auto-sub
-  probability the minutes model could supply.
+- **The auto-sub *trigger* probability** — P(some starter's slot needs
+  replacing this gameweek) — is still a flat constant per position
+  (`AUTO_SUB_TRIGGER_PROBABILITY`). The player-specific half of the same
+  weight (P(this bench player himself gets minutes if summoned)) is no longer
+  a constant — see the decision above — but the trigger side would need the
+  starting eleven's own joint minutes distribution, which is not known at the
+  point the optimiser needs this number.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
 - **Nothing is calibrated against reality yet.** Every number here is validated

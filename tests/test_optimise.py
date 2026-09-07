@@ -208,6 +208,42 @@ def test_wildcard_does_not_consume_the_free_transfer():
     assert plan.decisions[1].free_transfers == 2
 
 
+def test_bench_weight_decides_which_of_two_equal_goalkeepers_starts():
+    """Exactly one of the two squad GKs always sits on the bench -- so with equal
+    points, it should be whichever one is more likely to be a useful auto-sub."""
+    # A pool with exactly enough players to fill the squad shape (15), so both
+    # goalkeepers are forced into the 15 and the only open question is which of
+    # them starts.
+    players = make_pool()
+    minimal = (
+        [p for p in players if p.position == 1][:2]
+        + [p for p in players if p.position == 2][:5]
+        + [p for p in players if p.position == 3][:5]
+        + [p for p in players if p.position == 4][:3]
+    )
+    gk_high, gk_low = (p for p in minimal if p.position == 1)
+    object.__setattr__(gk_high, "bench_weight", {1: 0.9})
+    object.__setattr__(gk_low, "bench_weight", {1: 0.01})
+
+    decision = solve(minimal, bank=10000).first()
+    assert set(decision.squad) == {p.element for p in minimal}
+    assert gk_high.element not in decision.starting
+    assert gk_low.element in decision.starting
+
+
+def test_bench_falls_back_to_the_position_default_when_unset():
+    player = Player(1, 2, team=1, buy_price=50, sell_price=50, points={1: 2.0})
+    assert player.bench(1) == pytest.approx(0.13)
+
+
+def test_bench_uses_the_supplied_gameweek_weight():
+    player = Player(1, 2, team=1, buy_price=50, sell_price=50, points={1: 2.0},
+                     bench_weight={1: 0.4})
+    assert player.bench(1) == pytest.approx(0.4)
+    # Gameweeks without an explicit weight still fall back to the default.
+    assert player.bench(2) == pytest.approx(0.13)
+
+
 def test_pruning_keeps_owned_players_and_cheap_options():
     players = make_pool()
     object.__setattr__(players[0], "buy_price", 40)
