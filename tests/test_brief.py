@@ -115,6 +115,56 @@ def test_chips_are_reported(setup, optimal_state):
     assert set(brief.chips_available) == {"wildcard", "freehit", "3xc", "bboost"}
 
 
+def test_stability_is_not_computed_by_default(setup, optimal_state):
+    ctx, gameweeks, projections, players = setup
+    brief = build_brief(ctx, optimal_state, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT)
+    assert brief.stability is None
+
+
+def test_stability_reports_a_high_frequency_for_an_obvious_upgrade(setup, optimal_state):
+    """The same obvious-upgrade scenario as above, but asking for resampling:
+    a real, wide edge should survive nearly every bootstrap draw."""
+    ctx, gameweeks, projections, players = setup
+    prices = {int(e["id"]): int(e["now_cost"]) for e in ctx.elements}
+
+    premium = max(optimal_state.holdings, key=lambda h: h.purchase_price)
+    position = int(ctx.element(premium.element)["element_type"])
+    replacement = min(
+        (
+            e for e in ctx.elements
+            if int(e["element_type"]) == position
+            and int(e["id"]) not in optimal_state.element_ids
+        ),
+        key=lambda e: int(e["now_cost"]),
+    )
+
+    degraded = SquadState(
+        entry_id=1, gameweek=2,
+        holdings=[h for h in optimal_state.holdings if h.element != premium.element]
+        + [Holding(int(replacement["id"]), int(replacement["now_cost"]), 1)],
+        bank=optimal_state.bank + premium.purchase_price - int(replacement["now_cost"]),
+        free_transfers=1,
+    )
+
+    brief = build_brief(ctx, degraded, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT, stability_resamples=6,
+                        stability_seed=0, stability_time_limit=TIME_LIMIT)
+    assert brief.stability is not None
+    assert brief.stability.n_resamples == 6
+    assert brief.stability.n_solved > 0
+    assert all(0.0 <= m.frequency <= 1.0 for m in brief.stability.moves)
+    move = brief.moves[0]
+    assert brief.stability_of(move) is not None
+    # Every resample bought *some* replacement for the sold player; which
+    # specific cheap replacement won a given resample can vary, so check the
+    # aggregate rather than pinning a single (out, in) pair.
+    sold_in_every_resample = sum(
+        m.frequency for m in brief.stability.moves if m.move.out_element == move.out_element
+    )
+    assert sold_in_every_resample >= 0.5
+
+
 def test_transfers_pair_by_position():
     def player(element, position):
         return Player(element, position, team=1, buy_price=50, sell_price=50,

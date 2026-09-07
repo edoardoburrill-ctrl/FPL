@@ -309,6 +309,7 @@ def project_gameweek(
             position=position,
             minutes=minutes,
             breakdown={},
+            variance={},
         )
 
         for fixture, is_home in by_team.get(team, []):
@@ -332,6 +333,11 @@ def project_gameweek(
             )
             for key, value in single.breakdown.items():
                 combined.breakdown[key] = combined.breakdown.get(key, 0.0) + value
+            # Two fixtures in a double gameweek are independent draws (different
+            # opponents, no shared randomness), so their variances add exactly
+            # like their means do.
+            for key, value in single.variance.items():
+                combined.variance[key] = combined.variance.get(key, 0.0) + value
 
         projections[element_id] = combined
 

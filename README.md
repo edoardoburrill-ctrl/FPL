@@ -75,6 +75,7 @@ fpl explain haaland                # term-by-term breakdown of a projection
 fpl transfers --horizon 5          # multi-gameweek transfer plan
 fpl brief                          # the one command: what to do before this deadline
 fpl brief --markdown               # same, as markdown for a report or job summary
+fpl brief --stability 20           # + how often each transfer survives resampled projections
 fpl chips --horizon 8              # when to play each chip, measured in points
 fpl chips --restructuring          # also evaluate Wildcard and Free Hit (slow)
 fpl backtest --season 2024-25      # replay a real season, no lookahead, score it
@@ -88,7 +89,12 @@ from the local cache, so projections and analysis work offline.
 Solve times on a full player pool: `brief` and `transfers` take around twenty
 seconds, `chips` around two minutes over six gameweeks. `--restructuring` adds a
 full re-solve per candidate gameweek and takes considerably longer, which is why
-it is opt-in.
+it is opt-in. `--stability N` re-solves the whole horizon N more times against
+bootstrap-resampled projections and reports what fraction of resamples chose
+each transfer — a move chosen in 95% of them is a real edge, one chosen in 40%
+is a coin-flip that should not cost a hit. It roughly multiplies solve time by
+N, so it is opt-in too; worth turning on before acting on a marginal-looking
+transfer, not on every run.
 
 ## Backtest result — read before trusting a captaincy pick
 

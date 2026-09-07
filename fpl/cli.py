@@ -418,6 +418,11 @@ def transfers(
     discount: float = typer.Option(0.85, help="Per-gameweek discount on future points."),
     wildcard: Optional[int] = typer.Option(None, help="Gameweek to play a wildcard."),
     time_limit: float = typer.Option(90.0, help="Solver time limit in seconds."),
+    stability: int = typer.Option(
+        0, help="Re-solve this many times against resampled projections, and "
+                "report how often each transfer survives. 0 disables it; "
+                "expect the run to take roughly this many times longer."
+    ),
     offline: bool = typer.Option(True),
 ) -> None:
     """Plan transfers over a rolling horizon."""
@@ -440,8 +445,10 @@ def transfers(
         ctx, state, players, projections, gameweeks,
         discount=discount, max_hits=max_hits,
         wildcard_gameweek=wildcard, time_limit=time_limit,
+        stability_resamples=stability,
     )
     _render_plan(ctx, brief)
+    _render_stability(brief)
 
 
 def _render_plan(ctx, brief) -> None:
@@ -472,12 +479,34 @@ def _render_plan(ctx, brief) -> None:
     )
 
 
+def _render_stability(brief) -> None:
+    if brief.stability is None:
+        return
+    console.print(
+        f"\n[bold]Robustness[/bold] ({brief.stability.n_solved}/"
+        f"{brief.stability.n_resamples} resamples solved)"
+    )
+    for move in brief.moves:
+        frequency = brief.stability_of(move)
+        if frequency is None:
+            continue
+        colour = "green" if frequency >= 0.9 else ("yellow" if frequency >= 0.6 else "red")
+        console.print(
+            f"  {move.out_name} → {move.in_name}: "
+            f"[{colour}]chosen in {frequency:.0%} of resamples[/{colour}]"
+        )
+
+
 @app.command()
 def brief(
     horizon: int = typer.Option(5, help="How many gameweeks to plan over."),
     max_hits: int = typer.Option(1),
     wildcard: Optional[int] = typer.Option(None),
     time_limit: float = typer.Option(90.0),
+    stability: int = typer.Option(
+        0, help="Re-solve this many times against resampled projections, and "
+                "report how often each transfer survives. 0 disables it."
+    ),
     markdown: bool = typer.Option(False, help="Emit markdown instead of a table."),
     offline: bool = typer.Option(True),
 ) -> None:
@@ -495,6 +524,7 @@ def brief(
     result = build_brief(
         ctx, state, players, projections, gameweeks,
         max_hits=max_hits, wildcard_gameweek=wildcard, time_limit=time_limit,
+        stability_resamples=stability,
     )
 
     if markdown:
@@ -575,6 +605,8 @@ def brief(
         console.print("\n[bold]Watch[/bold]")
         for warning in result.warnings:
             console.print(f"  [yellow]{warning}[/yellow]")
+
+    _render_stability(result)
 
 
 def margin_text(margin: float) -> str:
