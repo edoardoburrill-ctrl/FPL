@@ -393,18 +393,69 @@ captaincy**, and `docs/TODO.md` says so.
 
 ## Still open
 
-- **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
-  still a normal approximation on expected BPS. `models/simulate.py` now
-  computes bonus properly — by simulating the match and ranking real BPS
-  draws with the verified tie rule — but it is not yet wired into the
-  optimiser's pruning path, which needs the fast path's speed. It is available
-  today for `fpl explain`-style enrichment of a shortlist.
+- **Bonus in the fast analytic path** (`points.py`, used by the optimiser's
+  pruning) is still a normal approximation on expected BPS, and stays that way
+  deliberately — the optimiser prunes hundreds of players per gameweek and
+  needs that speed. `models/simulate.py`'s honest, ranked-BPS bonus is now
+  wired into `fpl captain` (a "Haul %" and simulated xPts column, on by
+  default) and `fpl explain` (a simulated-vs-analytic cross-check line), via
+  `projection.simulate_players` — see the entry below on what that cross-check
+  turned up.
 - **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
   squad revert is not modelled.
 - **Bench weights** are constants by position rather than the auto-sub
   probability the minutes model could supply.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
-- **Nothing is calibrated against reality yet.** Every number here is validated
-  against generated data or internal consistency. The backtest is Phase 3, and
-  until it exists these models are plausible rather than proven.
+
+---
+
+## Wiring the simulation in surfaced a real gap: shares aren't conserved
+
+**Decided:** wire `models/simulate.py` into `fpl captain` and `fpl explain` as
+a cross-check (`projection.simulate_players`, simulating every fixture that
+touches the requested shortlist, in full, so bonus can be ranked honestly),
+rather than leaving it reachable only from test code.
+
+**What comparing the two paths on the same player found.** The module
+docstring in `simulate.py` says the simulated mean "recovers what the analytic
+path already computes" as a cross-check. On synthetic early-season data (heavy
+shrinkage, few games played) it does not, closely: a team's forward projected
+at 8.53 analytic xPts simulated to a mean of 5.58 — a 35% gap, not sampling
+noise. The reason is structural, not a bug in the new wiring:
+
+- `points.py`'s analytic path sums each player's `E[goals] = share × λ_team ×
+  minutes_fraction` **independently**, with nothing enforcing that a team's
+  shares sum to 1 across the roster.
+- `simulate.py`'s `_allocate_goals` **renormalises** shares across everyone on
+  the pitch on every draw, because it is allocating a fixed, already-drawn
+  number of team goals — it physically cannot hand out more goals than the
+  scoreline has.
+
+`output_share = rate_per_90 / team_expected_goals_per_match` is designed so
+shares sum to ~1 across a team's actual minutes, but nothing checks that
+property, and early-season shrinkage breaks it: several teammates on the same
+position/price-tier prior end up with near-identical, not-small shares. In the
+synthetic reproduction, one team's shares summed to **1.80** for goals and
+**1.64** for assists — the analytic path was effectively crediting close to
+double a team's own attacking output across its attackers, and had no way to
+notice.
+
+**Not fixed here.** The honest fix is either capping/renormalising shares in
+`player_rates.py` so they provably sum to ≤1 per team, or accepting the
+independent-expectation model's looseness and treating the simulation as the
+correction. Either is a real change to a calibrated, tested component, and
+this session's scope was wiring the cross-check in, not re-deriving the shares
+model. Flagging it here because it is a plausible contributor to the
+captaincy-ranking gap already on record above (`fpl backtest`, Salah picked
+top ~20 of 33 weeks) — an analytic model that overcredits a team's most-shrunk
+players independent of what teammates are doing would show exactly that
+symptom. The cross-check test in `tests/test_projection.py` records the
+observed ratio rather than asserting near-equality, so it will not silently
+mask this if it gets worse.
+
+- **Nothing is calibrated against reality yet — for the pieces this note does
+  not cover.** The projection engine's headline numbers now are (see the
+  season-replay entry above); the optimiser's transfer/chip decisions and the
+  points that are not yet backed by the simulation cross-check remain
+  validated only against generated data or internal consistency.

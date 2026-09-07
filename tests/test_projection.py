@@ -10,6 +10,7 @@ from fpl.models.projection import (
     fixture_goal_rates,
     matches_played,
     project_gameweek,
+    simulate_players,
 )
 from tests.fixtures.synthetic import build_universe
 
@@ -117,6 +118,79 @@ def test_double_gameweek_roughly_doubles(context, universe):
     single_total = sum(single[i].expected_points for i in team_one)
     double_total = sum(double[i].expected_points for i in team_one)
     assert 1.6 * single_total < double_total < 2.4 * single_total
+
+
+class TestSimulatePlayers:
+    """`simulate_players` is the honest-bonus cross-check path: it runs the
+    Monte Carlo match engine for a shortlist instead of the fast analytic
+    approximation. See docs/DECISIONS.md, "still open"."""
+
+    def _top_ids(self, context, gameweek=3, n=3):
+        projections = project_gameweek(context, gameweek)
+        ranked = sorted(projections.values(), key=lambda p: -p.expected_points)
+        return [p for p in ranked if p.expected_points > 0][:n]
+
+    def test_empty_shortlist_returns_empty(self, context):
+        assert simulate_players(context, 3, []) == {}
+
+    def test_returns_exactly_the_requested_shortlist(self, context):
+        top = self._top_ids(context)
+        ids = [p.element for p in top]
+        sims = simulate_players(context, 3, ids, n_sims=400, rng=np.random.default_rng(11))
+        assert set(sims) == set(ids)
+        for sim in sims.values():
+            assert sim.samples.size == 400
+            assert 0.0 <= sim.haul_probability() <= 1.0
+            assert sim.mean >= 0.0
+
+    def test_mean_roughly_tracks_the_analytic_projection(self, context):
+        """Same module docstring promise: 'the mean recovers what the analytic
+        path already computes' — but only loosely. The two paths disagree by
+        construction, not just by Monte Carlo noise: `simulate_fixture`
+        renormalises goal/assist shares across everyone on the pitch each draw
+        (goals cannot exceed the scoreline), while the analytic path in
+        `points.py` sums each player's expectation independently with no such
+        constraint. With heavy early-season shrinkage — several teammates on
+        the same shrunk prior — a team's shares can sum well past 1, and the
+        analytic path does not notice; the simulation cannot help but notice.
+        So this is a same-order-of-magnitude check, not an equality, and the
+        ratio is allowed to sit well below 1."""
+        top = self._top_ids(context, n=1)
+        projection = top[0]
+        sims = simulate_players(
+            context, 3, [projection.element], n_sims=4000, rng=np.random.default_rng(12)
+        )
+        sim = sims[projection.element]
+        ratio = sim.mean / projection.expected_points
+        assert 0.3 < ratio < 2.5, (
+            f"simulated mean {sim.mean:.2f} vs analytic {projection.expected_points:.2f} "
+            f"(ratio {ratio:.2f}) — too far apart to be the same signal"
+        )
+
+    def test_double_gameweek_sums_two_independent_fixtures(self, universe):
+        bootstrap, fixtures = universe
+        doubled_fixtures = [dict(f) for f in fixtures]
+        for fixture in doubled_fixtures:
+            if fixture["event"] == 5 and 1 in (fixture["team_h"], fixture["team_a"]):
+                fixture["event"] = 3
+                break
+        doubled_ctx = build_context(bootstrap, doubled_fixtures)
+        single_ctx = build_context(bootstrap, fixtures)
+
+        team_one_starters = [
+            int(e["id"])
+            for e in bootstrap["elements"]
+            if e["team"] == 1 and e["element_type"] != 1
+        ][:1]
+
+        single = simulate_players(
+            single_ctx, 3, team_one_starters, n_sims=3000, rng=np.random.default_rng(13)
+        )
+        double = simulate_players(
+            doubled_ctx, 3, team_one_starters, n_sims=3000, rng=np.random.default_rng(13)
+        )
+        element_id = team_one_starters[0]
+        assert double[element_id].mean > 1.4 * single[element_id].mean
 
 
 def test_odds_shift_the_goal_expectation(context, universe):

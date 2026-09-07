@@ -29,6 +29,7 @@ from fpl.models.minutes import (
 )
 from fpl.models.points import PlayerRates, PlayerProjection, project_player
 from fpl.models.scoring import GK, ScoringRules, load_rules
+from fpl.models.simulate import PlayerSimulation, SimPlayer, simulate_fixture
 from fpl.models.team_strength import (
     DEFAULT_RHO,
     MarketSolution,
@@ -39,6 +40,11 @@ from fpl.models.team_strength import (
     score_matrix,
     solve_from_market,
 )
+
+# A player under this appearance probability is simulation noise, not a
+# rotation risk worth the extra compute — mirrors optimize/inputs.py's pruning
+# threshold for the same reason.
+SIMULATION_MIN_APPEARANCE = 0.05
 
 # Statistics we fit priors for. Each maps to a field on the bootstrap element.
 RATE_STATS = (
@@ -336,3 +342,93 @@ def project_gameweek(
         projections[element_id] = combined
 
     return projections
+
+
+def simulate_players(
+    ctx: ProjectionContext,
+    gameweek: int,
+    element_ids: Sequence[int],
+    n_sims: int = 10_000,
+    rng: np.random.Generator | None = None,
+) -> dict[int, PlayerSimulation]:
+    """Monte Carlo point samples for a shortlist, via `models/simulate.py`.
+
+    This is the honest-bonus path described in `docs/DECISIONS.md` under
+    "still open": `project_gameweek` approximates bonus from expected BPS,
+    because the optimiser prunes hundreds of players and needs that speed.
+    Here the ask is a shortlist of a handful of players, so the cost of
+    simulating whole matches and ranking real BPS draws is affordable — this
+    is what `fpl captain` and `fpl explain` call for haul probabilities and a
+    simulated cross-check on the analytic mean.
+
+    Bonus is a rank within the match, so a shortlisted player cannot be
+    simulated alone: every fixture that touches the shortlist is simulated in
+    full (both teams, everyone with a real chance of appearing), and the
+    shortlist is sliced out of the result afterwards. A double-gameweek
+    player's two fixtures are simulated independently and the point samples
+    summed draw-for-draw, which is the same independence assumption the
+    analytic path makes when it sums two fixtures' expectations.
+    """
+    rng = rng or np.random.default_rng()
+    wanted = {int(e) for e in element_ids}
+    if not wanted:
+        return {}
+
+    current = ctx.current_event or gameweek
+    ahead = max(0, gameweek - current)
+    fixtures = gameweek_fixtures(ctx, gameweek)
+
+    by_team: dict[int, list[dict]] = {}
+    for element in ctx.elements:
+        by_team.setdefault(int(element["team"]), []).append(element)
+
+    def sim_side(team: int, is_home: bool) -> list[SimPlayer]:
+        players = []
+        for element in by_team.get(team, []):
+            element_id = int(element["id"])
+            minutes = minutes_forecast(ctx, element)
+            if minutes.p_appears < SIMULATION_MIN_APPEARANCE and element_id not in wanted:
+                continue
+            players.append(
+                SimPlayer(
+                    element=element_id,
+                    position=int(element["element_type"]),
+                    is_home=is_home,
+                    minutes=minutes,
+                    rates=player_rates(ctx, element),
+                )
+            )
+        return players
+
+    accumulated: dict[int, np.ndarray] = {}
+    for fixture in fixtures:
+        home_team, away_team = int(fixture["team_h"]), int(fixture["team_a"])
+        team_ids = {
+            int(e["id"]) for e in by_team.get(home_team, []) + by_team.get(away_team, [])
+        }
+        if wanted.isdisjoint(team_ids):
+            continue
+
+        lam_home, lam_away = fixture_goal_rates(ctx, fixture, ahead)
+        result = simulate_fixture(
+            sim_side(home_team, True),
+            sim_side(away_team, False),
+            lam_home,
+            lam_away,
+            ctx.rules,
+            n_sims=n_sims,
+            league_average_conceded=ctx.league_average_goals,
+            rng=rng,
+        )
+        for element_id, sim in result.players.items():
+            if element_id not in wanted:
+                continue
+            if element_id in accumulated:
+                accumulated[element_id] = accumulated[element_id] + sim.samples
+            else:
+                accumulated[element_id] = sim.samples
+
+    return {
+        element_id: PlayerSimulation(element_id, samples)
+        for element_id, samples in accumulated.items()
+    }

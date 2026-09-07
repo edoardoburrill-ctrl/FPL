@@ -164,6 +164,15 @@ gameweek is being projected (ratings, priors, team contexts); `project_gameweek`
 sums over a player's fixtures in that gameweek — so a double gameweek sums two
 and a blank sums none, with no special-casing.
 
+`simulate_players` is the glue between this pipeline and `models/simulate.py`:
+given a shortlist of element ids, it finds every fixture that touches one of
+them, rebuilds the fitted rates and minutes forecasts for both full teams in
+each (filtered to a minimum appearance probability — simulating a reserve who
+will not play is wasted compute), and calls `simulate_fixture`. A
+double-gameweek player's two fixtures are simulated independently and their
+point samples summed draw-for-draw. It returns only the requested shortlist,
+not the whole-team context it had to simulate to rank bonus honestly.
+
 ### `models/bps.py`
 
 Two things at very different confidence levels, and the module says so.
@@ -193,8 +202,19 @@ either honestly.
 
 Not wired into the optimiser's pruning path — it is too slow for that by
 design (≈2s for one 22-player fixture at 10k draws; the per-draw bonus
-allocation is a pure-Python loop and is the bottleneck). It exists for
-enriching a shortlist: `fpl explain`-style output, not `fpl transfers`.
+allocation is a pure-Python loop and is the bottleneck). It is wired, via
+`projection.simulate_players`, into `fpl captain` (a haul-probability and
+simulated-xPts column, on by default) and `fpl explain` (a simulated
+cross-check line) — a shortlist, not the whole pool `fpl transfers` prunes.
+
+Comparing the two paths on the same player surfaced a real gap, not just
+Monte Carlo noise: the analytic path's per-player goal/assist shares are not
+constrained to sum to a team's actual output, and under early-season
+shrinkage they can run well past 100%, which this simulation's renormalising
+allocation cannot help but correct for. See `DECISIONS.md`, "Wiring the
+simulation in surfaced a real gap: shares aren't conserved" — not fixed yet,
+and flagged as a plausible contributor to the captaincy-ranking gap in the
+season-replay backtest below.
 
 ---
 

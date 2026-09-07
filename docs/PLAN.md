@@ -450,15 +450,24 @@ and has been run against 2024-25. Its result is the headline of this phase: the
 projection engine beats a do-nothing baseline but currently **loses to FPL's
 own `xP`** on ranking and badly on captaincy-pick quality — see
 `DECISIONS.md` for the full numbers and the working theory (no odds data, no
-injury signal, both structural gaps in this specific backtest). Still open:
-wiring the simulation-based bonus into the fast path the optimiser uses,
-bootstrap-robust transfer recommendations, calibration reliability plots, and —
-the thing most likely to close the gap — re-running this backtest with real
-historical odds once that data source is identified. Hyperparameters (`γ`,
-horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
-are still the values chosen at build time. *Ends with:* measured evidence the
-thing beats its baselines — which now exists, and currently argues for caution,
-not confidence.
+injury signal, both structural gaps in this specific backtest). The
+simulation-based bonus (`models/simulate.py`) is now wired into `fpl captain`
+(haul probability, simulated xPts) and `fpl explain` (a simulated cross-check
+line) via `projection.simulate_players` — the optimiser's own pruning path
+stays on the fast analytic approximation deliberately, since it prunes
+hundreds of players and needs the speed. That wiring surfaced a second,
+structural finding, not yet fixed: the analytic path's per-player goal/assist
+expectations aren't constrained to sum to a team's actual output the way the
+simulation's draws are, and under early-season shrinkage they can run well
+past 100% — see `DECISIONS.md`, which also flags it as a plausible contributor
+to the captaincy gap above. Still open: bootstrap-robust transfer
+recommendations, calibration reliability plots, the share-conservation gap
+just described, and — the thing most likely to close the ranking gap —
+re-running the backtest with real historical odds once that data source is
+identified. Hyperparameters (`γ`, horizon, shrinkage `k`, decay `ξ`) are not
+yet tuned against the backtest; they are still the values chosen at build
+time. *Ends with:* measured evidence the thing beats its baselines — which now
+exists, and currently argues for caution, not confidence.
 
 **Phase 4 — Chips, automation, polish.** *(mostly done)* Bench Boost and Triple
 Captain are decided inside the MILP; Wildcard and Free Hit are evaluated by

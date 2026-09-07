@@ -15,7 +15,7 @@ from fpl.backtest.replay import replay_season
 from fpl.data.historical import HistoricalDataUnavailable
 from fpl.config import InvalidEntryId, parse_entry_id
 from fpl.data.fpl_client import FPLUnavailable
-from fpl.models.projection import project_gameweek
+from fpl.models.projection import project_gameweek, simulate_players
 from fpl.models.scoring import POSITION_NAMES, verify_rules
 from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
 from fpl.optimize.milp import prune_pool
@@ -157,6 +157,10 @@ def captain(
     gameweek: Optional[int] = typer.Option(None, "--gw"),
     top: int = typer.Option(8),
     squad_only: bool = typer.Option(True, help="Only consider players you own."),
+    simulate: bool = typer.Option(
+        True, help="Monte Carlo the shortlist for a haul probability (models/simulate.py)."
+    ),
+    sims: int = typer.Option(8000, help="Draws per fixture, if --simulate."),
     offline: bool = typer.Option(True),
 ) -> None:
     """Captaincy ranking for a gameweek."""
@@ -176,23 +180,38 @@ def captain(
         console.print("[yellow]No players to rank — sync your squad first.[/yellow]")
         raise typer.Exit(1)
 
+    shortlist = pool[:top]
+    sims_by_player = {}
+    if simulate:
+        sims_by_player = simulate_players(
+            ctx, gameweek, [p.element for p in shortlist], n_sims=sims
+        )
+
     table = Table(title=f"Gameweek {gameweek} captaincy")
     table.add_column("Player")
     table.add_column("xPts", justify="right")
     table.add_column("Captained", justify="right")
+    if sims_by_player:
+        table.add_column("Haul %", justify="right")
+        table.add_column("Sim xPts", justify="right")
     table.add_column("Gap to next", justify="right")
 
     best = pool[0].expected_points
-    for i, projection in enumerate(pool[:top]):
+    for i, projection in enumerate(shortlist):
         gap = projection.expected_points - (
             pool[i + 1].expected_points if i + 1 < len(pool) else projection.expected_points
         )
-        table.add_row(
+        row = [
             _name(ctx, projection.element),
             f"{projection.expected_points:.2f}",
             f"{2 * projection.expected_points:.2f}",
-            f"{gap:+.2f}" if i + 1 < len(pool) else "-",
-        )
+        ]
+        if sims_by_player:
+            sim = sims_by_player.get(projection.element)
+            row.append(f"{100 * sim.haul_probability():.0f}%" if sim else "-")
+            row.append(f"{sim.mean:.2f}" if sim else "-")
+        row.append(f"{gap:+.2f}" if i + 1 < len(pool) else "-")
+        table.add_row(*row)
     console.print(table)
 
     margin = best - (pool[1].expected_points if len(pool) > 1 else best)
@@ -380,6 +399,13 @@ def set_squad(
 def explain(
     player: str = typer.Argument(..., help="Player name or element id."),
     gameweek: Optional[int] = typer.Option(None, "--gw"),
+    simulate: bool = typer.Option(
+        True,
+        help="Also Monte Carlo the match for a haul probability and a bonus "
+        "cross-check (models/simulate.py) — slower, honest bonus instead of "
+        "the fast path's expected-BPS approximation.",
+    ),
+    sims: int = typer.Option(8000, help="Draws per fixture, if --simulate."),
     offline: bool = typer.Option(True),
 ) -> None:
     """Break a projection down term by term."""
@@ -403,12 +429,21 @@ def explain(
         raise typer.Exit(1)
 
     results = project_gameweek(ctx, gameweek)
-    for element_id in matches[:5]:
-        projection = results.get(element_id)
-        if projection is None:
-            continue
+    shown = [eid for eid in matches[:5] if eid in results]
+    sims_by_player = (
+        simulate_players(ctx, gameweek, shown, n_sims=sims) if simulate and shown else {}
+    )
+    for element_id in shown:
+        projection = results[element_id]
         console.print(f"\n[bold]{_name(ctx, element_id)}[/bold] — GW{gameweek}")
         console.print(projection.explain())
+        sim = sims_by_player.get(element_id)
+        if sim is not None:
+            console.print(
+                f"  Simulated (n={sim.samples.size}): mean {sim.mean:.2f}, "
+                f"std {sim.std:.2f}, P(≥10 pts) {100 * sim.haul_probability():.0f}% "
+                "— match-simulated bonus, not the fast path's approximation."
+            )
 
 
 @app.command()
