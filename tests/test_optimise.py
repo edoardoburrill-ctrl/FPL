@@ -9,6 +9,7 @@ import pulp
 import pytest
 
 from fpl.optimize.milp import (
+    BENCH_WEIGHT,
     MAX_PER_CLUB,
     SQUAD_SHAPE,
     SQUAD_SIZE,
@@ -115,6 +116,42 @@ def test_the_optimiser_spends_a_free_transfer_on_a_real_upgrade():
 
     assert 30 in decision.transfers_in
     assert decision.hits == 0
+
+
+def test_bench_weight_override_prefers_benching_the_highest_weighted_position():
+    """A per-gameweek bench weight table should steer which position is benched.
+
+    With points equal across the pool, starting always beats benching (a
+    weight below 1 always loses value), so the only real preference left is
+    over the three outfield spots the 15-vs-11 squad/XI gap forces onto the
+    bench — and that should go to whichever position loses the least value
+    there.
+    """
+    points = {e: 2.0 for e in range(1, 43)}
+    players = make_pool(points)
+
+    bench_weight = {1: {1: BENCH_WEIGHT[1], 2: 0.99, 3: 0.13, 4: 0.05}}
+    decision = solve(players, bench_weight=bench_weight).first()
+
+    counts = positions(players, decision.starting)
+    # Benching a defender is nearly free (weight 0.99); the XI minimum of 3
+    # caps how many can go, so exactly 2 of the 5 defenders are benched.
+    assert counts[2] == 3
+    # The one remaining forced bench spot goes to whichever position costs
+    # least to bench — midfielders (weight 0.13), not forwards (weight 0.05,
+    # the most expensive position to leave out).
+    assert counts[3] == 4
+    assert counts[4] == 3
+
+
+def test_bench_weight_defaults_to_the_constant_when_not_given():
+    points = {e: 2.0 for e in range(1, 43)}
+    players = make_pool(points)
+
+    with_default = solve(players)
+    with_explicit_constant = solve(players, bench_weight={1: dict(BENCH_WEIGHT)})
+
+    assert with_default.objective == pytest.approx(with_explicit_constant.objective)
 
 
 def test_no_hit_for_a_marginal_gain():

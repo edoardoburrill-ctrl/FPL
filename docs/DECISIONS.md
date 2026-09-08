@@ -391,6 +391,40 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Bench weight estimated from the minutes model, per gameweek and position
+
+**Decided:** replace the flat `BENCH_WEIGHT` constant with a table built from
+the projections themselves — for each gameweek and position, the average
+`p_out` (already "P(zero involvement this fixture)" in `MinutesForecast`)
+across players who are themselves likely to start.
+
+**Alternative:** keep the hand-picked constant (`{GK: 0.06, outfield: 0.13}`),
+which is what shipped through Phase 2 and most of Phase 3.
+
+The quantity the optimiser actually needs is *not* "how likely is this bench
+player to play" — that is already folded into his own `points`, via the
+minutes model's `expected_appearance_points` and friends, so weighting by it
+again would double-count. What is missing is a separate, structural fact: an
+FPL auto-sub only fires when a *starter* blanks, so the right multiplier is
+P(a starter at this position registers zero minutes), which is exactly what
+`p_out`, averaged over likely starters (`p_start ≥ 0.5`), estimates. Restricting
+to likely starters matters: a bottom-of-the-squad player's own blank risk says
+nothing about whether the XI he could theoretically replace ever needs a sub,
+and including him would pull the estimate toward "almost everyone blanks
+almost always," which is true of fringe players and false of the XI.
+
+This also makes the weight reactive to the calendar in a way a constant never
+can — congestion or an international break genuinely raises the chance a
+starter is rested or picks up a knock, and the estimate moves with it, all
+from data the pipeline already computes for every other term.
+
+Falls back to the old constant per gameweek and position wherever there
+are fewer than fifteen likely starters to estimate from (`MIN_STARTERS_FOR_ESTIMATE`
+in `optimize/inputs.py`) — chiefly a very early season or a small backtest
+universe, where the estimate would be noise dressed up as signal.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -401,8 +435,6 @@ captaincy**, and `docs/TODO.md` says so.
   today for `fpl explain`-style enrichment of a shortlist.
 - **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
   squad revert is not modelled.
-- **Bench weights** are constants by position rather than the auto-sub
-  probability the minutes model could supply.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
 - **Nothing is calibrated against reality yet.** Every number here is validated

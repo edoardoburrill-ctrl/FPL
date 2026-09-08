@@ -37,8 +37,10 @@ XI_MAX = {1: 1, 2: 5, 3: 5, 4: 3}
 MAX_PER_CLUB = 3
 
 # Probability an unused bench player is pulled into the eleven by an auto-sub.
-# Bench points are real but heavily discounted; Phase 3 replaces this constant
-# with the auto-sub probability implied by the minutes model.
+# Bench points are real but heavily discounted. This is the fallback used when
+# there isn't enough signal to estimate it for a given gameweek and position;
+# see `optimize.inputs.bench_weight_table` for the data-driven version, built
+# from how often a likely starter at that position blanks.
 BENCH_WEIGHT = {1: 0.06, 2: 0.13, 3: 0.13, 4: 0.13}
 
 # Token objective weight on holding free transfers; see the note where it is used.
@@ -214,6 +216,7 @@ def optimise(
     captain_candidates: int = 25,
     bench_boost_gameweeks: Iterable[int] | None = None,
     triple_captain_gameweeks: Iterable[int] | None = None,
+    bench_weight: Mapping[int, Mapping[int, float]] | None = None,
     time_limit: float | None = 90.0,
     solver: pulp.LpSolver | None = None,
 ) -> Plan:
@@ -226,6 +229,11 @@ def optimise(
     ``transfer_caps`` overrides the per-gameweek transfer limit for specific
     gameweeks — setting one to zero is how the "what if I just hold?" comparison
     that quantifies a transfer's value is computed.
+
+    ``bench_weight`` overrides the constant ``BENCH_WEIGHT`` with a per-gameweek,
+    per-position table (``gameweek -> position -> weight``); see
+    `optimize.inputs.bench_weight_table` for how to build one from the minutes
+    model. Any gameweek or position missing from it falls back to the constant.
     """
     if not gameweeks:
         raise ValueError("need at least one gameweek to optimise")
@@ -320,11 +328,12 @@ def optimise(
     contributions = []
     for t, gameweek in enumerate(gameweeks):
         weight = discount**t
+        gw_bench_weight = (bench_weight or {}).get(gameweek, BENCH_WEIGHT)
         for player in players:
             points = player.ep(gameweek)
             if points == 0:
                 continue
-            bench = BENCH_WEIGHT.get(player.position, 0.12)
+            bench = gw_bench_weight.get(player.position, BENCH_WEIGHT.get(player.position, 0.12))
             pid = player.element
             contributions.append(weight * points * start[pid][t])
             if t in captain[pid]:

@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 
 from fpl.models.points import PlayerProjection
 from fpl.models.projection import ProjectionContext
+from fpl.optimize.inputs import bench_weight_table
 from fpl.optimize.milp import Decision, Plan, Player, optimise, prune_pool
 from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
@@ -124,6 +125,7 @@ def build_brief(
         discount=discount,
         max_hits_per_gameweek=max_hits,
         time_limit=time_limit,
+        bench_weight=bench_weight_table(projections),
     )
 
     plan = optimise(pool, gameweeks, wildcard_gameweek=wildcard_gameweek, **common)

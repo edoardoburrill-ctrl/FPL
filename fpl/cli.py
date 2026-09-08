@@ -17,7 +17,12 @@ from fpl.config import InvalidEntryId, parse_entry_id
 from fpl.data.fpl_client import FPLUnavailable
 from fpl.models.projection import project_gameweek
 from fpl.models.scoring import POSITION_NAMES, verify_rules
-from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
+from fpl.optimize.inputs import (
+    bench_weight_table,
+    build_players,
+    horizon_gameweeks,
+    project_horizon,
+)
 from fpl.optimize.milp import prune_pool
 from fpl.optimize.chips import chip_calendar
 from fpl.report.brief import build_brief, render_markdown
@@ -612,6 +617,7 @@ def chips(
     baseline, advice = chip_calendar(
         pool, gameweeks, state,
         include_restructuring=restructuring, time_limit=time_limit,
+        bench_weight=bench_weight_table(projections),
     )
     if not baseline.solved:
         console.print(f"[red]Optimiser returned {baseline.status}[/red]")
