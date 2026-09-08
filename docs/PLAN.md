@@ -460,12 +460,20 @@ structural finding, not yet fixed: the analytic path's per-player goal/assist
 expectations aren't constrained to sum to a team's actual output the way the
 simulation's draws are, and under early-season shrinkage they can run well
 past 100% — see `DECISIONS.md`, which also flags it as a plausible contributor
-to the captaincy gap above. Still open: bootstrap-robust transfer
-recommendations, calibration reliability plots, the share-conservation gap
-just described, and — the thing most likely to close the ranking gap —
-re-running the backtest with real historical odds once that data source is
-identified. Hyperparameters (`γ`, horizon, shrinkage `k`, decay `ξ`) are not
-yet tuned against the backtest; they are still the values chosen at build
+to the captaincy gap above. The fallback team-strength model
+(`team_strength.fit_ratings`) now also fits a team-specific home-advantage
+deviation (`TeamRatings.home_delta`) rather than one league-wide number for
+all 20 teams — a real fortress/travels-badly split, fit from results rather
+than sourced from FPL's own coarse home/away strength labels, with its own
+harder ridge penalty so it does not leak into the attack rating it sits next
+to. Individual-player opponent- and style-specific effects remain unmodelled
+— see `DECISIONS.md` for exactly what that would need. Still open:
+bootstrap-robust transfer recommendations, calibration reliability plots, the
+share-conservation gap just described, individual-level opponent/style
+effects, and — the thing most likely to close the ranking gap — re-running
+the backtest with real historical odds once that data source is identified.
+Hyperparameters (`γ`, horizon, shrinkage `k`, decay `ξ`) are not yet tuned
+against the backtest; they are still the values chosen at build
 time. *Ends with:* measured evidence the thing beats its baselines — which now
 exists, and currently argues for caution, not confidence.
 

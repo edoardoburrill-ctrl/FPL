@@ -126,6 +126,19 @@ market probabilities. `fit_ratings` is the fallback where odds do not exist:
 time-decayed weighted MLE with a ridge penalty toward league average, which is
 what stops three August matches producing absurd ratings.
 
+Attack and defence are fit **per team**, so every fixture's goal expectation
+is already opponent-specific — this is the mechanism, not a fixture-difficulty
+lookup (see `player_rates.py` below). `TeamRatings.home_delta` extends the
+same idea along a second axis: on top of the league-wide `home_advantage`,
+each team gets its own deviation, ridge-penalised harder (8x the attack/
+defence penalty by default — a team's home split is fit off half as many
+matches, and unlike attack/defence, gets no signal at all from its opponents'
+matches) so a real fortress effect survives shrinkage but three home wins in a
+row does not get read as one. Deliberately not sourced from
+`bootstrap-static`'s own `strength_*_home`/`strength_*_away` fields — those
+are FPL's own coarse classification, and the codebase's stance (below) is to
+fit strength from real results rather than trust a hand-set number.
+
 `score_matrix` is the joint distribution everything defensive is computed from —
 clean sheets and goals conceded come from it, never from an independent Poisson.
 

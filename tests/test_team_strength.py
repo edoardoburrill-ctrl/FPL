@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from fpl.models.devig import devig
 from fpl.models.team_strength import (
@@ -96,6 +97,75 @@ def test_ratings_recover_known_team_strength():
     correlation = np.corrcoef(fitted, attack_true)[0, 1]
     assert correlation > 0.8, f"attack ratings barely correlate with truth ({correlation:.2f})"
     assert ratings.home_advantage > 0
+
+
+def test_home_delta_recovers_a_genuine_fortress_team():
+    """Team 0 is a true fortress: a big home boost on top of the league-wide
+    home advantage, and no such boost away. A model with only a single global
+    home-advantage term cannot express this; `home_delta` is what lets it."""
+    rng = np.random.default_rng(5)
+    n_teams = 20
+    attack_true = rng.normal(0.0, 0.15, n_teams)
+    fortress_team = 0
+    fortress_boost = 0.6
+
+    matches = []
+    day = 0
+    for _ in range(16):  # enough home games per team for the effect to show
+        order = rng.permutation(n_teams)
+        for i in range(0, n_teams, 2):
+            h, a = int(order[i]), int(order[i + 1])
+            boost = fortress_boost if h == fortress_team else 0.0
+            lam = np.exp(0.25 + attack_true[h] - attack_true[a] * 0.5 + 0.2 + boost)
+            mu = np.exp(0.25 + attack_true[a] - attack_true[h] * 0.5)
+            matches.append(
+                {
+                    "home": h, "away": a, "day": float(day),
+                    "home_goals": int(rng.poisson(lam)),
+                    "away_goals": int(rng.poisson(mu)),
+                }
+            )
+        day += 1
+
+    ratings = fit_ratings(matches, half_life_days=200.0, prior_strength=1.0)
+    assert ratings.home_delta[fortress_team] > 0.15
+    # Every other team's deviation should sit well below the fortress team's.
+    others = [ratings.home_delta[t] for t in range(n_teams) if t != fortress_team]
+    assert ratings.home_delta[fortress_team] > max(others)
+    assert ratings.team_home_advantage(fortress_team) == pytest.approx(
+        ratings.home_advantage + ratings.home_delta[fortress_team]
+    )
+
+
+def test_home_delta_is_shrunk_harder_than_attack_defence_by_default():
+    """Same call, only the ridge strength differs — the default should pull
+    home_delta closer to zero than an equally-sized attack/defence penalty
+    would, since it is fit off half the matches."""
+    rng = np.random.default_rng(6)
+    n_teams = 10
+    matches = []
+    day = 0
+    for _ in range(6):
+        order = rng.permutation(n_teams)
+        for i in range(0, n_teams, 2):
+            h, a = int(order[i]), int(order[i + 1])
+            lam, mu = 1.4, 1.1
+            matches.append(
+                {
+                    "home": h, "away": a, "day": float(day),
+                    "home_goals": int(rng.poisson(lam)),
+                    "away_goals": int(rng.poisson(mu)),
+                }
+            )
+        day += 1
+
+    default_fit = fit_ratings(matches, half_life_days=200.0, prior_strength=1.0)
+    weak_penalty_fit = fit_ratings(
+        matches, half_life_days=200.0, prior_strength=1.0, home_delta_prior_strength=1.0
+    )
+    default_spread = np.std(list(default_fit.home_delta.values()))
+    weak_spread = np.std(list(weak_penalty_fit.home_delta.values()))
+    assert default_spread < weak_spread
 
 
 def test_market_weight_decays_with_horizon():

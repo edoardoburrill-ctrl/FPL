@@ -391,25 +391,6 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
-## Still open
-
-- **Bonus in the fast analytic path** (`points.py`, used by the optimiser's
-  pruning) is still a normal approximation on expected BPS, and stays that way
-  deliberately — the optimiser prunes hundreds of players per gameweek and
-  needs that speed. `models/simulate.py`'s honest, ranked-BPS bonus is now
-  wired into `fpl captain` (a "Haul %" and simulated xPts column, on by
-  default) and `fpl explain` (a simulated-vs-analytic cross-check line), via
-  `projection.simulate_players` — see the entry below on what that cross-check
-  turned up.
-- **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
-  squad revert is not modelled.
-- **Bench weights** are constants by position rather than the auto-sub
-  probability the minutes model could supply.
-- **Prices are static** across the horizon. Price-change prediction is Phase 4
-  and is worth far less than getting the points right.
-
----
-
 ## Wiring the simulation in surfaced a real gap: shares aren't conserved
 
 **Decided:** wire `models/simulate.py` into `fpl captain` and `fpl explain` as
@@ -454,8 +435,98 @@ symptom. The cross-check test in `tests/test_projection.py` records the
 observed ratio rather than asserting near-equality, so it will not silently
 mask this if it gets worse.
 
-- **Nothing is calibrated against reality yet — for the pieces this note does
-  not cover.** The projection engine's headline numbers now are (see the
-  season-replay entry above); the optimiser's transfer/chip decisions and the
-  points that are not yet backed by the simulation cross-check remain
-  validated only against generated data or internal consistency.
+---
+
+## Team-specific home advantage, fit rather than sourced from FPL's own labels
+
+**Decided:** extend `fit_ratings`'s fallback team-strength model with a
+per-team deviation from the league-wide home advantage (`TeamRatings.
+home_delta`), fit by the same weighted MLE as attack and defence, with its
+own — harder — ridge penalty.
+
+**The question that prompted it:** whether the model accounts for a team's
+performance varying by opponent and by style, for both the team and
+individual players. The honest answer, at the time this was asked, split
+three ways:
+
+- **Team-vs-opponent: yes, already, and it is the architecture's central
+  idea.** Attack and defence are fit per team, so every fixture's goal
+  expectation already depends on exactly who the opponent is
+  (`attack[home] - defence[away]`, and the market path is fixture-specific by
+  construction) — see `player_rates.py`'s design note: there is deliberately
+  no separate fixture-difficulty multiplier anywhere in this codebase,
+  because this *is* the mechanism.
+- **Team home/away split by team: no, and now yes.** The fallback model had
+  exactly one home-advantage number, shared by all 20 teams. Real teams differ
+  here — some are a genuine fortress at home and moderate away, others are
+  nearly the same team home or away — and nothing distinguished them. This is
+  the gap this decision closes.
+- **Individual-player matchup and opposition-style effects: no, and not
+  closed by this change.** A player's own attacking share (`ρ_p` in
+  `player_rates.py`) does not vary by opponent at all today — only the team
+  total it is multiplied by does. So the model has no notion of "this winger
+  historically punishes a high line" or "this forward's minutes/output shifts
+  against a low block" independent of the team-level goal expectation, and no
+  notion of playing *style* (press intensity, buildup tempo, set-piece share)
+  as a dimension distinct from the two scalars (attack, defence) the model
+  already fits. Closing this properly needs data this codebase does not
+  ingest — shot location, formation, or a much larger per-player-per-opponent
+  sample than a season or two provides — not just more code, and it stays
+  open rather than being half-built here.
+
+**Why fit it rather than read `bootstrap-static`'s `strength_*_home` /
+`strength_*_away` fields**, which already carry FPL's own home/away split and
+were sitting unused. Those are a coarse, editorially-set classification
+(effectively a 1-5-ish scale) refreshed on FPL's own schedule, not fit to this
+season's actual results — the same objection already on record against using
+FPL's fixture-difficulty rating (`player_rates.py`'s design note again).
+Fitting from real match results keeps the model consistent with itself:
+attack and defence are not sourced from FPL's labels either.
+
+**Shrinkage had to be tuned, not just added.** The natural default —
+matching `prior_strength`, since it is the same kind of ridge penalty — measurably
+degraded `test_ratings_recover_known_team_strength`'s attack-recovery
+correlation (0.80 → 0.79): the extra free parameters, even penalised, gave
+the optimiser room to explain home-team scoring swings as team-specific home
+form instead of attack strength, which is directly the wrong trade when the
+attack rating is what the whole pipeline downstream depends on. A home
+delta's signal also comes from strictly fewer matches than attack or defence
+— only the team's own home games, with no signal at all from its opponents'
+matches, unlike attack/defence which both teams' full schedules inform.
+Doubling the penalty step by step against that regression test (4x → 8x)
+found the point where the existing test recovers its margin while a
+genuine, generated fortress effect (`test_home_delta_recovers_a_genuine_
+fortress_team`) is still detected — 8x is not a round-number guess, it is
+where both tests hold at once.
+
+---
+
+## Still open
+
+- **Bonus in the fast analytic path** (`points.py`, used by the optimiser's
+  pruning) is still a normal approximation on expected BPS, and stays that way
+  deliberately — the optimiser prunes hundreds of players per gameweek and
+  needs that speed. `models/simulate.py`'s honest, ranked-BPS bonus is now
+  wired into `fpl captain` (a "Haul %" and simulated xPts column, on by
+  default) and `fpl explain` (a simulated-vs-analytic cross-check line), via
+  `projection.simulate_players` — see the entry above on what that cross-check
+  turned up.
+- **Individual-player opponent and style effects are not modelled** — a
+  player's attacking share does not vary by who he is facing or how they
+  play, only the team-goal total it multiplies does. See the entry above;
+  closing this needs richer data than this codebase currently ingests.
+- **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
+  squad revert is not modelled.
+- **Bench weights** are constants by position rather than the auto-sub
+  probability the minutes model could supply.
+- **Prices are static** across the horizon. Price-change prediction is Phase 4
+  and is worth far less than getting the points right.
+- **Fixture congestion is not wired up.** `minutes.py`'s `forecast_minutes`
+  accepts a `rotation_factor` for exactly this, but nothing computes one from
+  the fixture list's own midweek/cup congestion signal — every call site
+  leaves it at the neutral default. `PLAN.md` describes this as built; it
+  is not, yet.
+- **Nothing is calibrated against reality yet — for the pieces the season-replay
+  backtest and the simulation cross-check do not cover.** The optimiser's
+  transfer/chip decisions remain validated only against generated data or
+  internal consistency.

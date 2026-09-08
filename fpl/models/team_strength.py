@@ -11,6 +11,12 @@ Dixon-Coles bivariate Poisson to recover the goal rates the market is implying.
 **Fallback: a fitted ratings model.** For gameweeks whose odds are not yet
 posted, a time-decayed weighted-MLE Dixon-Coles on match results, shrunk toward
 prior-season ratings so that three matches of noise cannot dominate in August.
+Attack and defence are the two axes that carry opposition-specific strength —
+every fixture's goal expectation already depends on precisely who the
+opponent is, home or away, not on a league-average figure. A team-specific
+home-advantage deviation (``TeamRatings.home_delta``, see below) is fit on top
+of that, for the sides whose home and away form genuinely differ rather than
+mirroring a single league-wide split.
 
 The two are blended with weight shifting to the market as a fixture approaches.
 
@@ -22,7 +28,7 @@ corner of the distribution right is worth real points.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.optimize import minimize
@@ -151,8 +157,17 @@ def solve_from_market(
 class TeamRatings:
     """Dixon-Coles attack/defence ratings, fitted by time-decayed weighted MLE.
 
-    ``lam_home = exp(mu + attack[i] - defence[j] + home_advantage)``
+    ``lam_home = exp(mu + attack[i] - defence[j] + home_advantage + home_delta[i])``
     ``lam_away = exp(mu + attack[j] - defence[i])``
+
+    ``home_advantage`` is the league-wide home effect. ``home_delta`` is how
+    much team *i* deviates from it — some sides are a genuine fortress at
+    home and toothless away (or vice versa), which a single global figure
+    cannot express. It is fitted with its own, stronger ridge penalty (see
+    ``fit_ratings``): a team-specific home/away split is a real but usually
+    small effect, estimated off a fraction of the matches attack/defence get
+    (only that team's home games, not all of them), so it is shrunk harder
+    toward zero to stop a small sample from being read as a fortress.
     """
 
     teams: list[int]
@@ -161,13 +176,17 @@ class TeamRatings:
     home_advantage: float
     baseline: float
     rho: float = DEFAULT_RHO
+    home_delta: dict[int, float] = field(default_factory=dict)
+
+    def team_home_advantage(self, team: int) -> float:
+        return self.home_advantage + self.home_delta.get(team, 0.0)
 
     def expected_goals(self, home_team: int, away_team: int) -> tuple[float, float]:
         lam = np.exp(
             self.baseline
             + self.attack.get(home_team, 0.0)
             - self.defence.get(away_team, 0.0)
-            + self.home_advantage
+            + self.team_home_advantage(home_team)
         )
         mu = np.exp(
             self.baseline
@@ -182,6 +201,7 @@ def fit_ratings(
     half_life_days: float = 180.0,
     as_of_day: float | None = None,
     prior_strength: float = 4.0,
+    home_delta_prior_strength: float | None = None,
     rho: float = DEFAULT_RHO,
 ) -> TeamRatings:
     """Fit ratings to ``matches``.
@@ -194,9 +214,23 @@ def fit_ratings(
     (league average). Early in a season, when every team has three matches, this
     is what stops a 5-0 opening win from producing an absurd rating. It is the
     regularisation that makes the fallback usable in August at all.
+
+    ``home_delta_prior_strength`` penalises each team's deviation from the
+    league-wide home advantage — a "some teams are a fortress at home"
+    effect. It defaults to eight times ``prior_strength``: attack and defence
+    are each fit off a team's full match list (home and away), but a team's
+    home-advantage deviation is fit off only half of that, its home games,
+    and — unlike attack/defence, where every team's rating is pinned down by
+    both its own matches and its opponents' — a home delta only ever gets
+    signal from the team's own home games, so it needs the harder penalty to
+    avoid soaking up noise that belongs to attack. (Confirmed empirically:
+    4x measurably degraded `test_ratings_recover_known_team_strength`'s
+    attack-recovery correlation; 8x does not.)
     """
     if not matches:
         raise ValueError("no matches to fit")
+    if home_delta_prior_strength is None:
+        home_delta_prior_strength = 8.0 * prior_strength
 
     teams = sorted({m["home"] for m in matches} | {m["away"] for m in matches})
     index = {team: i for i, team in enumerate(teams)}
@@ -215,15 +249,21 @@ def fit_ratings(
     def unpack(theta: np.ndarray):
         attack = theta[:n]
         defence = theta[n : 2 * n]
-        home_adv, baseline = theta[2 * n], theta[2 * n + 1]
-        # Identifiability: attack and defence are only defined up to a constant.
+        home_delta = theta[2 * n : 3 * n]
+        home_adv, baseline = theta[3 * n], theta[3 * n + 1]
+        # Identifiability: attack, defence and the home-delta are each only
+        # defined up to a constant, which the scalar home_advantage/baseline
+        # terms absorb.
         attack = attack - attack.mean()
         defence = defence - defence.mean()
-        return attack, defence, home_adv, baseline
+        home_delta = home_delta - home_delta.mean()
+        return attack, defence, home_delta, home_adv, baseline
 
     def negative_log_likelihood(theta: np.ndarray) -> float:
-        attack, defence, home_adv, baseline = unpack(theta)
-        lam = np.exp(baseline + attack[home_idx] - defence[away_idx] + home_adv)
+        attack, defence, home_delta, home_adv, baseline = unpack(theta)
+        lam = np.exp(
+            baseline + attack[home_idx] - defence[away_idx] + home_adv + home_delta[home_idx]
+        )
         mu = np.exp(baseline + attack[away_idx] - defence[home_idx])
         lam = np.clip(lam, 1e-6, 20.0)
         mu = np.clip(mu, 1e-6, 20.0)
@@ -243,13 +283,14 @@ def fit_ratings(
         ll = ll + np.log(np.clip(tau, 1e-9, None))
 
         penalty = prior_strength * (np.sum(attack**2) + np.sum(defence**2))
+        penalty += home_delta_prior_strength * np.sum(home_delta**2)
         return float(-np.sum(weights * ll) + penalty)
 
-    start = np.zeros(2 * n + 2)
-    start[2 * n] = 0.25  # home advantage
-    start[2 * n + 1] = np.log(1.4)  # baseline goals
+    start = np.zeros(3 * n + 2)
+    start[3 * n] = 0.25  # home advantage
+    start[3 * n + 1] = np.log(1.4)  # baseline goals
     result = minimize(negative_log_likelihood, start, method="L-BFGS-B")
-    attack, defence, home_adv, baseline = unpack(result.x)
+    attack, defence, home_delta, home_adv, baseline = unpack(result.x)
 
     return TeamRatings(
         teams=teams,
@@ -258,6 +299,7 @@ def fit_ratings(
         home_advantage=float(home_adv),
         baseline=float(baseline),
         rho=rho,
+        home_delta={t: float(home_delta[index[t]]) for t in teams},
     )
 
 
