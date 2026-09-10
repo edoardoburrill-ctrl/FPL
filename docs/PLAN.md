@@ -466,11 +466,12 @@ not confidence.
 
 **Phase 4 — Chips, automation, polish.** *(mostly done)* Bench Boost and Triple
 Captain are decided inside the MILP; Wildcard and Free Hit are evaluated by
-re-solving the horizon with the chip active in each candidate gameweek. Chip
-eligibility enforces the two-set, GW19-expiry structure. GitHub Actions handle
-scheduled sync and pre-deadline briefs. `fpl explain` gives term-by-term
-breakdowns. Still outstanding: price-change prediction, and modelling the Free
-Hit's squad revert explicitly rather than bounding it with wildcard semantics.
+re-solving the horizon with the chip active in each candidate gameweek — Free
+Hit's squad revert is now modelled exactly (the persistent squad chain skips
+its gameweek), not bounded by wildcard semantics. Chip eligibility enforces
+the two-set, GW19-expiry structure. GitHub Actions handle scheduled sync and
+pre-deadline briefs. `fpl explain` gives term-by-term breakdowns. Still
+outstanding: price-change prediction.
 
 Phases 0–1 are the urgent ones and are deliberately small enough to land quickly;
 Phases 2–4 improve the edge without you being blocked from using the tool meanwhile.

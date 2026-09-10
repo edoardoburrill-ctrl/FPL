@@ -287,9 +287,13 @@ candidate gameweek; that is much slower and therefore opt-in.
 Chip evaluation uses `CHIP_DISCOUNT = 0.97`, not the planner's 0.85. See
 [`DECISIONS.md`](DECISIONS.md#chip-timing-discount).
 
-Free Hit is currently evaluated with wildcard semantics, which is an **upper
-bound** on its value because the squad revert is not modelled. Stated in the
-code, not glossed.
+Free Hit's squad revert is modelled exactly in `optimize/milp.py`, not
+approximated with wildcard semantics: the persistent squad chain skips the
+Free Hit gameweek (the following gameweek's "previous squad" points two
+gameweeks back, not one), and its spend is excluded from every later budget
+check and from the bank figure reported for later gameweeks. Free Hit itself
+still reuses the wildcard branch's unlimited-transfers, no-hit logic for its
+own one gameweek. See [`DECISIONS.md`](DECISIONS.md#free-hits-squad-revert-modelled-exactly-rather-than-bounded-by-wildcard).
 
 ---
 

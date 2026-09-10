@@ -222,6 +222,7 @@ def optimise(
     max_transfers_per_gameweek: int = 3,
     transfer_caps: Mapping[int, int] | None = None,
     wildcard_gameweek: int | None = None,
+    freehit_gameweek: int | None = None,
     forced_out: Iterable[int] = (),
     captain_candidates: int = 25,
     bench_boost_gameweeks: Iterable[int] | None = None,
@@ -238,6 +239,15 @@ def optimise(
     ``transfer_caps`` overrides the per-gameweek transfer limit for specific
     gameweeks — setting one to zero is how the "what if I just hold?" comparison
     that quantifies a transfer's value is computed.
+
+    ``freehit_gameweek`` plays like a wildcard for that one gameweek — unlimited
+    free transfers, no hit — but the squad **reverts**: the gameweek after it
+    picks up from the squad as it stood *before* the Free Hit, not from the
+    Free Hit's own one-off squad. Modelled by letting the persistent transfer
+    chain skip over that gameweek (the following gameweek's "previous squad"
+    points two gameweeks back, not one) and excluding its spend from every
+    later budget constraint, rather than by bounding it with wildcard
+    semantics — see docs/DECISIONS.md.
     """
     if not gameweeks:
         raise ValueError("need at least one gameweek to optimise")
@@ -399,12 +409,26 @@ def optimise(
     # -- transfers -------------------------------------------------------
 
     owned_set = set(owned)
+    freehit_index = next(
+        (t for t in index if freehit_gameweek is not None and gameweeks[t] == freehit_gameweek),
+        None,
+    )
+    # If gameweek `t - 1` was a Free Hit, the persistent squad chain must skip
+    # over it: gameweek `t` continues from the squad two gameweeks back, not
+    # from the Free Hit's own transient squad, which is why this can't just
+    # be `squad[pid][t - 1]` unconditionally.
+    reverts_after = {
+        t for t in index if freehit_index is not None and t == freehit_index + 1
+    }
     for t in index:
         for player in players:
             pid = player.element
-            previous = (
-                squad[pid][t - 1] if t > 0 else (1 if pid in owned_set else 0)
-            )
+            if t in reverts_after:
+                previous = squad[pid][t - 2] if t >= 2 else (1 if pid in owned_set else 0)
+            else:
+                previous = (
+                    squad[pid][t - 1] if t > 0 else (1 if pid in owned_set else 0)
+                )
             problem += squad[pid][t] - previous == buy[pid][t] - sell[pid][t]
             # Buying and selling the same player in the same gameweek is never
             # useful and would otherwise let the solver launder budget.
@@ -426,12 +450,13 @@ def optimise(
                 )
 
         building_from_scratch = t == 0 and not owned_set
-        if building_from_scratch or (
+        is_restructure_gameweek = (
             wildcard_gameweek is not None and gameweeks[t] == wildcard_gameweek
-        ):
-            # A wildcard — or picking an initial squad — makes any number of
-            # transfers free, and does not consume the free transfer you were
-            # holding: it survives into the following gameweek.
+        ) or (freehit_gameweek is not None and gameweeks[t] == freehit_gameweek)
+        if building_from_scratch or is_restructure_gameweek:
+            # A wildcard or Free Hit — or picking an initial squad — makes any
+            # number of transfers free, and does not consume the free transfer
+            # you were holding: it survives into the following gameweek.
             problem += hits[t] == 0
             problem += transfers <= (transfer_caps or {}).get(
                 gameweeks[t], SQUAD_SIZE
@@ -465,6 +490,8 @@ def optimise(
         if t in triple_captain:
             active.append(triple_captain[t])
         if wildcard_gameweek is not None and gameweeks[t] == wildcard_gameweek:
+            active.append(1)
+        if freehit_gameweek is not None and gameweeks[t] == freehit_gameweek:
             active.append(1)
         if len(active) > 1:
             problem += pulp.lpSum(active) <= 1
@@ -521,6 +548,11 @@ def optimise(
             * sell[p.element][t]
             for p in players
         )
+        # A Free Hit's own spend never touches the running bank: its squad is
+        # sold back at the end of the gameweek exactly as it was bought, and
+        # the whole transaction reverts. Every later budget check has to skip
+        # it, or the FH gameweek's transient buys would permanently eat into
+        # the money available afterwards.
         prior = pulp.lpSum(
             pulp.lpSum(p.buy_price * buy[p.element][u] for p in players)
             - pulp.lpSum(
@@ -529,6 +561,7 @@ def optimise(
                 for p in players
             )
             for u in range(t)
+            if u != freehit_index
         )
         problem += bank - prior - spend + proceeds >= 0
 
@@ -563,11 +596,19 @@ def optimise(
             bought = [p.element for p in players if buy[p.element][t].value() > 0.5]
             sold = [p.element for p in players if sell[p.element][t].value() > 0.5]
 
-            running_bank -= sum(by_id[e].buy_price for e in bought)
-            running_bank += sum(
-                (by_id[e].sell_price if e in owned_set else by_id[e].buy_price)
-                for e in sold
+            gameweek_bank = (
+                running_bank
+                - sum(by_id[e].buy_price for e in bought)
+                + sum(
+                    (by_id[e].sell_price if e in owned_set else by_id[e].buy_price)
+                    for e in sold
+                )
             )
+            # A Free Hit's spend reverts at the end of its own gameweek, so its
+            # buy/sell delta must not carry into the running total later
+            # gameweeks are computed from — only this row's own bank reflects it.
+            if t != freehit_index:
+                running_bank = gameweek_bank
 
             starters = sorted(starting, key=lambda e: -by_id[e].ep(gameweek))
             skipper = captains[0] if captains else (starters[0] if starters else None)
@@ -580,6 +621,8 @@ def optimise(
                 chip = "3xc"
             elif wildcard_gameweek is not None and gameweek == wildcard_gameweek:
                 chip = "wildcard"
+            elif freehit_gameweek is not None and gameweek == freehit_gameweek:
+                chip = "freehit"
 
             points = sum(by_id[e].ep(gameweek) for e in starting)
             points += by_id[skipper].ep(gameweek) if skipper else 0.0
@@ -602,7 +645,7 @@ def optimise(
                     transfers_out=sold,
                     free_transfers=int(round(free[t].value() or 0)),
                     hits=int(round(hits[t].value() or 0)),
-                    bank=running_bank / 10.0,
+                    bank=gameweek_bank / 10.0,
                     expected_points=points,
                     chip=chip,
                 )

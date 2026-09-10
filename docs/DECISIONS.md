@@ -450,6 +450,33 @@ precise number in its own right.
 
 ---
 
+## Free Hit's squad revert, modelled exactly rather than bounded by Wildcard
+
+**Decided:** let the persistent squad chain skip the Free Hit gameweek. The
+gameweek after a Free Hit computes its "previous squad" from two gameweeks
+back rather than one, so the Free Hit's own transient squad never enters the
+chain; every later budget check likewise excludes the Free Hit gameweek's
+spend from the running "money already committed" total; and the reported
+bank for each gameweek does the same when walking the solved plan back out
+in Python. Free Hit itself reuses the wildcard branch's unlimited-transfers,
+no-hit, free-transfer-preserving logic for its own one gameweek — only the
+"what happens next" is different.
+
+**Alternative — the previous behaviour:** evaluate Free Hit by re-solving
+with `wildcard_gameweek` set to the candidate week, i.e. treat it as a
+permanent restructure. Since a Free Hit's squad can never be worth *more*
+than the same squad kept permanently, this gave a correct upper bound, and
+was documented as such rather than passed off as the real number. It has
+been replaced now that the exact mechanism is cheap to express: no new
+solver variables, just changing which past squad a handful of constraints
+point at. `test_freehit_reverts_while_wildcard_persists` in `test_chips.py`
+is the regression test that would have caught the old approximation: a
+fixture swing that lasts past one gameweek now correctly favours Wildcard's
+persistence over Free Hit's revert, where the old code scored them
+identically.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -458,8 +485,6 @@ precise number in its own right.
   draws with the verified tie rule — but it is not yet wired into the
   optimiser's pruning path, which needs the fast path's speed. It is available
   today for `fpl explain`-style enrichment of a shortlist.
-- **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
-  squad revert is not modelled.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
 - **No calibration reliability plots yet.** The backtest (above) validates

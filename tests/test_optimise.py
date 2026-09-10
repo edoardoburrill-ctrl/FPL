@@ -231,6 +231,75 @@ def test_wildcard_does_not_consume_the_free_transfer():
     assert plan.decisions[1].free_transfers == 2
 
 
+def test_freehit_allows_a_full_rebuild_without_hits():
+    points = {e: 2.0 for e in range(1, 43)}
+    for e in range(28, 34):
+        points[e] = 9.0
+    players = make_pool(points)
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    decision = solve(players, current_squad=squad, bank=0, free_transfers=1,
+                     freehit_gameweek=1).first()
+    assert decision.chip == "freehit"
+    assert decision.hits == 0
+    assert decision.transfer_count > 2
+
+
+def test_freehit_squad_reverts_the_following_gameweek():
+    """The defining behaviour: a Free Hit's squad is one gameweek only."""
+    per_gw = {
+        1: {**{e: 2.0 for e in range(1, 43)}, **{e: 20.0 for e in range(28, 34)}},
+        2: {e: 2.0 for e in range(1, 43)},  # flat: no reason to transfer at all
+    }
+    players = make_pool()
+    for player in players:
+        object.__setattr__(
+            player, "points", {gw: per_gw[gw][player.element] for gw in per_gw}
+        )
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    plan = solve(players, gameweeks=(1, 2), current_squad=squad, bank=0,
+                 free_transfers=1, freehit_gameweek=1)
+    gw1, gw2 = plan.decisions
+
+    assert gw1.chip == "freehit"
+    assert set(gw1.squad) != set(squad), "the Free Hit should have rebuilt the squad"
+    assert set(gw2.squad) == set(squad), "the squad must revert exactly, not persist"
+    assert gw2.transfers_in == [] and gw2.transfers_out == []
+
+
+def test_freehit_does_not_consume_the_free_transfer():
+    players = make_pool()
+    for player in players:
+        object.__setattr__(player, "points", {1: 2.0, 2: 2.0})
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    plan = solve(players, gameweeks=(1, 2), current_squad=squad, bank=0,
+                 free_transfers=1, freehit_gameweek=1)
+    assert plan.decisions[1].free_transfers == 2
+
+
+def test_freehit_spend_does_not_carry_into_the_following_gameweeks_budget():
+    """A Free Hit's transient spend must not permanently eat into the bank."""
+    points = {e: 2.0 for e in range(1, 43)}
+    for e in range(28, 34):
+        points[e] = 9.0
+    players = make_pool(points)
+    for player in players:
+        object.__setattr__(
+            player, "points", {1: points[player.element], 2: 2.0}
+        )
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    plan = solve(players, gameweeks=(1, 2), current_squad=squad, bank=0,
+                 free_transfers=1, freehit_gameweek=1)
+    gw1, gw2 = plan.decisions
+    assert set(gw1.squad) != set(squad), "the Free Hit should have spent the bank"
+    # Reverted to the original squad with no further transfers: the bank must
+    # be back to what it was before the Free Hit, not still down by its spend.
+    assert gw2.bank == pytest.approx(0.0)
+
+
 def test_pruning_keeps_owned_players_and_cheap_options():
     players = make_pool()
     object.__setattr__(players[0], "buy_price", 40)
