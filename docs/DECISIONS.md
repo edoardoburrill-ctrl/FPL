@@ -391,6 +391,27 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Bench weight scaled by the player's own appearance chance
+
+**Decided:** the objective's bench-value term multiplies the position-based
+base rate (`BENCH_WEIGHT`, calibrated at `REFERENCE_APPEARANCE = 0.75`, a
+fairly nailed player) by `player's own P(plays any minutes) / REFERENCE_APPEARANCE`
+for that gameweek, clipped to `[0, 1]`.
+
+**Alternative:** the flat per-position constant this replaced.
+
+An auto-sub only pays off if the bench player himself gets minutes when
+called upon — a flat constant credits a rotation-risk differential on the
+bench the same as a nailed one, which overvalues the gamble. The minutes
+model already produces `p_appears` per player-gameweek for the analytic
+points path, so threading it through to the bench term was free: no new
+model, no new data. This does not yet account for auto-sub *order* (GK →
+outfield by bench slot, itself dependent on which teammate blanks), which
+stays future work; the fix is specifically to the "does this bench player
+convert the chance he gets" half, not the "does a chance arise" half.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -401,8 +422,6 @@ captaincy**, and `docs/TODO.md` says so.
   today for `fpl explain`-style enrichment of a shortlist.
 - **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
   squad revert is not modelled.
-- **Bench weights** are constants by position rather than the auto-sub
-  probability the minutes model could supply.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
 - **Nothing is calibrated against reality yet.** Every number here is validated

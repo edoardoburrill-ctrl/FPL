@@ -9,11 +9,14 @@ import pulp
 import pytest
 
 from fpl.optimize.milp import (
+    BENCH_WEIGHT,
     MAX_PER_CLUB,
+    REFERENCE_APPEARANCE,
     SQUAD_SHAPE,
     SQUAD_SIZE,
     XI_SIZE,
     Player,
+    _bench_weight,
     optimise,
     prune_pool,
 )
@@ -57,6 +60,26 @@ def positions(players, ids):
     for element in ids:
         counts[lookup[element]] += 1
     return counts
+
+
+def test_bench_weight_scales_with_the_players_own_appearance_chance():
+    """A bench player is only worth insuring to the extent he himself plays."""
+    def player(element, appearance):
+        return Player(element=element, position=2, team=1, buy_price=50,
+                       sell_price=50, points={1: 2.0},
+                       appearance={1: appearance} if appearance is not None else {},
+                       name=f"p{element}")
+
+    nailed = player(1, REFERENCE_APPEARANCE)
+    fringe = player(2, 0.1)
+    certain = player(3, 1.0)
+    unspecified = player(4, None)
+
+    assert _bench_weight(nailed, 1) == pytest.approx(BENCH_WEIGHT[2])
+    assert _bench_weight(fringe, 1) < _bench_weight(nailed, 1)
+    assert 0.0 <= _bench_weight(certain, 1) <= 1.0
+    # No appearance forecast for this gameweek falls back to the reference rate.
+    assert _bench_weight(unspecified, 1) == pytest.approx(BENCH_WEIGHT[2])
 
 
 def test_squad_obeys_size_shape_and_club_limits():

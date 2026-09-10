@@ -37,9 +37,19 @@ XI_MAX = {1: 1, 2: 5, 3: 5, 4: 3}
 MAX_PER_CLUB = 3
 
 # Probability an unused bench player is pulled into the eleven by an auto-sub.
-# Bench points are real but heavily discounted; Phase 3 replaces this constant
-# with the auto-sub probability implied by the minutes model.
+# Calibrated at REFERENCE_APPEARANCE, the appearance chance of a fairly nailed
+# player. Bench points are real but heavily discounted, and a specific bench
+# player's own chance of playing at all (from the minutes model) scales this
+# base rate: a fringe player is worth far less bench insurance than a nailed
+# one, regardless of position.
 BENCH_WEIGHT = {1: 0.06, 2: 0.13, 3: 0.13, 4: 0.13}
+REFERENCE_APPEARANCE = 0.75
+
+
+def _bench_weight(player: "Player", gameweek: int) -> float:
+    base = BENCH_WEIGHT.get(player.position, 0.12)
+    p_appear = player.appearance.get(gameweek, REFERENCE_APPEARANCE)
+    return max(0.0, min(1.0, base * p_appear / REFERENCE_APPEARANCE))
 
 # Token objective weight on holding free transfers; see the note where it is used.
 FREE_TRANSFER_EPSILON = 0.01
@@ -55,6 +65,7 @@ class Player:
     buy_price: int  # tenths of a million
     sell_price: int  # what *you* would get for him, from the ledger
     points: Mapping[int, float]  # gameweek -> expected points
+    appearance: Mapping[int, float] = field(default_factory=dict)  # gw -> P(plays any minutes)
     name: str = ""
 
     def ep(self, gameweek: int) -> float:
@@ -324,7 +335,7 @@ def optimise(
             points = player.ep(gameweek)
             if points == 0:
                 continue
-            bench = BENCH_WEIGHT.get(player.position, 0.12)
+            bench = _bench_weight(player, gameweek)
             pid = player.element
             contributions.append(weight * points * start[pid][t])
             if t in captain[pid]:

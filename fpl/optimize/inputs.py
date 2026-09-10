@@ -46,6 +46,11 @@ def build_players(
             for gw in gameweeks
             if element_id in projections[gw]
         }
+        appearance = {
+            gw: projections[gw][element_id].minutes.p_appears
+            for gw in gameweeks
+            if element_id in projections[gw]
+        }
 
         if not include_unlikely and element_id not in owned:
             likely = max(
@@ -69,6 +74,7 @@ def build_players(
                 buy_price=now_cost,
                 sell_price=holding.selling_price(now_cost) if holding else now_cost,
                 points=points,
+                appearance=appearance,
                 name=str(element.get("web_name", element_id)),
             )
         )
