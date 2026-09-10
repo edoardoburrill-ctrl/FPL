@@ -150,3 +150,14 @@ def test_projection_explains_itself():
     rates = PlayerRates(goals_share=0.3, assists_share=0.1, bps_per_90=25)
     text = project_player(1, FWD, NAILED, rates, 1.8, 1.0, _conceded(), RULES).explain()
     assert "TOTAL" in text and "appearance" in text
+
+
+def test_projection_explanation_includes_std_and_diagnostic_probabilities():
+    rates = PlayerRates(goals_share=0.3, assists_share=0.1, defcon_per_90=6.0, bps_per_90=25)
+    projection = project_player(1, MID, NAILED, rates, 1.8, 1.0, _conceded(), RULES)
+    text = projection.explain()
+    assert "std" in text
+    assert "p_bonus_at_least_1=" in text
+    assert "p_clean_sheet=" in text
+    # p_60_plus duplicates the header's P(60+) and is deliberately left out.
+    assert "p_60_plus=" not in text

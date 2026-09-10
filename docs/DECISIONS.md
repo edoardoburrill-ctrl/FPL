@@ -477,6 +477,52 @@ identically.
 
 ---
 
+## Calibration reliability curves — a second, independent line of evidence for the same conclusion
+
+**Decided:** `PlayerProjection.diagnostics` carries the raw probability behind
+each thresholded breakdown term (`p_60_plus`, `p_clean_sheet`,
+`p_bonus_at_least_1`) separately from the points-valued `breakdown`, so
+nothing gets summed into `expected_points` by accident. `backtest/replay.py`
+checks each against the real outcome for free while it is already walking the
+season for the points comparison, and `backtest/calibration.py` scores the
+result with a reliability curve, Brier score, and a calibration slope (the
+OLS slope of the 0/1 outcome on the predicted probability — 1.0 is
+calibrated, below 1 is overconfident, above 1 is underconfident). `fpl
+backtest` prints it after the points summary.
+
+**A real result, not a projected one.** Run against the same 2024-25,
+GW6-38 replay (9,858 player-gameweeks) the points comparison above already
+used:
+
+```
+P(60+ minutes)   n=9710  Brier=0.1913  slope=0.79
+P(clean sheet)   n=8637  Brier=0.1441  slope=0.83
+P(any bonus)     n=9710  Brier=0.0926  slope=0.50
+```
+
+All three slopes sit below 1: the model is **underconfident** across the
+board, most severely for bonus. The reliability curves show why — every bin
+below the top one under-predicts the real rate (e.g. minutes: predicted 6% →
+actually 21%; predicted 50% → actually 66%), meaning the probabilities are
+compressed toward a middling value rather than spread out to match how often
+things really happen.
+
+**This is the same root cause as the ranking finding above, seen from a
+different angle, not a new problem.** "Compressed toward a middling value"
+is the calibration-language version of "the fallback team-strength model
+doesn't swing a fixture's goal expectation sharply enough" — a clean sheet
+or bonus probability that stays close to its position's average regardless
+of the specific fixture is exactly a probability that is underconfident on
+easy fixtures and underconfident on hard ones alike. Bonus, entirely derived
+from expected BPS which is itself driven by the same team-strength fixture
+signal, is both the worst-calibrated (slope 0.50) and the term flagged
+elsewhere in this file as most in need of the simulation-based replacement —
+consistent, not coincidental. The fix most likely to move both numbers is
+the same one already identified: real historical odds anchoring the
+team-strength model, not a change to the calibration or bonus code itself.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -487,10 +533,8 @@ identically.
   today for `fpl explain`-style enrichment of a shortlist.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
-- **No calibration reliability plots yet.** The backtest (above) validates
-  the projection engine's ranking and error against real 2024-25 outcomes,
-  but there is no per-output reliability curve ("of the player-gameweeks we
-  said were 20% to reach a haul, did 20% actually do it?") for clean sheets,
-  defensive contributions, or bonus specifically. PLAN.md §6 calls for one
-  per probabilistic output; only the headline MAE/Spearman/top-pick numbers
-  exist today.
+- **No defensive-contribution calibration.** `p_defensive_contribution` is
+  recorded in `PlayerProjection.diagnostics` but not yet wired into
+  `backtest/replay.py`, because DC scoring did not exist in the 2024-25
+  archive the backtest replays — there is no real outcome to check it
+  against until a season with the rule is replayable.

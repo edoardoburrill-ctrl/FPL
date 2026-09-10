@@ -238,6 +238,20 @@ budget — this validates the projection engine specifically, which is the layer
 everything else depends on. See `DECISIONS.md` for why that scope was chosen
 and what the first real run found.
 
+### `backtest/calibration.py`
+
+The same replay also checks the model's *probabilities*, not just its means:
+`PlayerProjection.diagnostics` carries the raw P(60+ minutes), P(clean sheet)
+and P(any bonus) behind each thresholded breakdown term (kept separate from
+`breakdown` so nothing here is ever summed into `expected_points` by
+mistake), and `replay.py` checks each against the real outcome for free while
+it is already walking the season. `reliability_curve`, `brier_score` and
+`calibration_slope` are pure functions with no season-shaped inputs, tested
+directly on synthetic data; `SeasonReport.calibration_summary()` pools them
+across gameweeks and is what `fpl backtest` prints. See `DECISIONS.md` for
+what the first real run found — the same underlying problem as the ranking
+finding above, confirmed from a second angle.
+
 ---
 
 ## 4. The optimiser

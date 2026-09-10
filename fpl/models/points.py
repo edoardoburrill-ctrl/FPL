@@ -52,6 +52,12 @@ class PlayerProjection:
     # and friends below. Terms are summed as if independent, the same
     # simplification the means already make of each other.
     variance: dict[str, float] = field(default_factory=dict)
+    # Intermediate probabilities and rates, in their own units (not points) —
+    # `p_clean_sheet`, `p_bonus_at_least_1`, `expected_bps` — kept separately
+    # from `breakdown` so nothing here is ever accidentally summed into
+    # `expected_points`. This is what `backtest/calibration.py` checks against
+    # real outcomes, and what `fpl explain` can show alongside the points.
+    diagnostics: dict[str, float] = field(default_factory=dict)
 
     @property
     def expected_points(self) -> float:
@@ -78,7 +84,18 @@ class PlayerProjection:
             f"E[min]={self.minutes.expected_minutes:.0f} "
             f"P(start)={self.minutes.p_start:.0%} P(60+)={self.minutes.p_60plus:.0%}"
         )
-        return "\n".join([header, *parts, f"  {'TOTAL':<22s} {self.expected_points:+6.3f}"])
+        footer = f"  {'TOTAL':<22s} {self.expected_points:+6.3f}  (std {self.point_std:.2f})"
+        lines = [header, *parts, footer]
+        if self.diagnostics:
+            # Everything except p_60_plus, which the header already shows.
+            probs = ", ".join(
+                f"{name}={value:.0%}"
+                for name, value in sorted(self.diagnostics.items())
+                if name != "p_60_plus"
+            )
+            if probs:
+                lines.append(f"  {probs}")
+        return "\n".join(lines)
 
 
 def _conceded_while_on_pitch(
@@ -173,41 +190,45 @@ def threshold_probability(rate_per_90: float, minutes: float, threshold: int) ->
     return float(1.0 - poisson.cdf(threshold - 1, lam))
 
 
-def expected_bonus(expected_bps: float) -> float:
-    """Approximate expected bonus from expected BPS.
+def bonus_distribution(expected_bps: float) -> tuple[float, float, float, float]:
+    """P(bonus = 0), P(1), P(2), P(3), treating BPS as normal around `expected_bps`.
 
-    Bonus is awarded by rank within a match, so this models the probability of
-    clearing each of the three BPS thresholds, treating both the player's BPS and
-    the match's threshold as normal. Crude, monotone, and clearly labelled as the
-    term most in need of the simulation-based replacement.
+    Bonus is awarded by rank within a match, so this models it as a step
+    function of a single normal draw against the three BPS thresholds — crude
+    and clearly labelled as the term most in need of the simulation-based
+    replacement (`models/simulate.py` does that properly), but it gives an
+    exact distribution *for this approximation*, which `expected_bonus`,
+    `_bonus_variance` and the calibration diagnostics all read off directly
+    rather than each re-deriving it.
     """
     if expected_bps <= 0:
-        return 0.0
+        return (1.0, 0.0, 0.0, 0.0)
     spread = np.sqrt(BONUS_PLAYER_SD**2 + BONUS_THRESHOLD_SD**2)
-    return float(
-        sum(norm.sf(threshold, loc=expected_bps, scale=spread) for threshold in BONUS_THRESHOLDS)
-    )
+    edges = [-np.inf, *BONUS_THRESHOLDS, np.inf]
+    cdfs = [norm.cdf(edge, loc=expected_bps, scale=spread) for edge in edges]
+    p0, p1, p2, p3 = (cdfs[i + 1] - cdfs[i] for i in range(4))
+    return (float(p0), float(p1), float(p2), float(p3))
+
+
+def expected_bonus(expected_bps: float) -> float:
+    """Approximate expected bonus from expected BPS. See `bonus_distribution`."""
+    p0, p1, p2, p3 = bonus_distribution(expected_bps)
+    return float(p1 + 2.0 * p2 + 3.0 * p3)
 
 
 def _bonus_variance(expected_bps: float, p_appears: float) -> float:
     """Var[bonus points], consistent with `expected_bonus`'s normal approximation.
 
-    Bonus is a step function of a single normal draw (BPS vs. the three
-    thresholds), so it takes values 0-3 with probabilities read off that
-    normal's CDF at each threshold — giving an exact variance for that
-    approximation, not another layer of it. `expected_bonus` gates the mean by
-    `p_appears`; here that gate is treated as an independent Bernoulli on top
-    of the bonus draw (`Var[A*B] = p*Var[B] + p(1-p)*E[B]^2` for independent
-    `A ~ Bernoulli(p)`, `B`), which is not monotone in `p` — losing the "does
-    he even appear" variance as `p -> 1` competes with the gate's own variance
-    peaking at `p = 0.5`.
+    `expected_bonus` gates the mean by `p_appears`; here that gate is treated
+    as an independent Bernoulli on top of the bonus draw
+    (`Var[A*B] = p*Var[B] + p(1-p)*E[B]^2` for independent `A ~ Bernoulli(p)`,
+    `B`), which is not monotone in `p` — losing the "does he even appear"
+    variance as `p -> 1` competes with the gate's own variance peaking at
+    `p = 0.5`.
     """
     if expected_bps <= 0:
         return 0.0
-    spread = np.sqrt(BONUS_PLAYER_SD**2 + BONUS_THRESHOLD_SD**2)
-    edges = [-np.inf, *BONUS_THRESHOLDS, np.inf]
-    cdfs = [norm.cdf(edge, loc=expected_bps, scale=spread) for edge in edges]
-    probs = np.array([cdfs[i + 1] - cdfs[i] for i in range(4)])
+    probs = np.array(bonus_distribution(expected_bps))
     values = np.array([0.0, 1.0, 2.0, 3.0])
     mean_given_appear = float(np.sum(probs * values))
     second_given_appear = float(np.sum(probs * values**2))
@@ -251,6 +272,7 @@ def project_player(
     """
     breakdown: dict[str, float] = {}
     variance: dict[str, float] = {}
+    diagnostics: dict[str, float] = {"p_60_plus": minutes.p_60plus}
     minutes_fraction = float(np.clip(minutes.expected_minutes / 90.0, 0.0, 1.0))
 
     breakdown["appearance"] = minutes.expected_appearance_points
@@ -281,6 +303,7 @@ def project_player(
         p_cs = minutes.p_60plus * cs_prob
         breakdown["clean_sheet"] = cs_points * p_cs
         variance["clean_sheet"] = _bernoulli_variance(p_cs, cs_points)
+        diagnostics["p_clean_sheet"] = p_cs
 
     if position in rules.conceded_penalty_positions:
         breakdown["goals_conceded"] = -expected_conceded_penalty(
@@ -312,6 +335,7 @@ def project_player(
         variance["defensive_contribution"] = _bernoulli_variance(
             p_defcon, rules.defcon_points
         )
+        diagnostics["p_defensive_contribution"] = p_defcon
 
     if rates.yellow_per_90:
         yellow_rate = rates.yellow_per_90 * minutes_fraction
@@ -329,6 +353,8 @@ def project_player(
         expected_bps = rates.bps_per_90 * minutes_fraction * fixture_multiplier
         breakdown["bonus"] = expected_bonus(expected_bps) * minutes.p_appears
         variance["bonus"] = _bonus_variance(expected_bps, minutes.p_appears)
+        p0, _, _, _ = bonus_distribution(expected_bps)
+        diagnostics["p_bonus_at_least_1"] = minutes.p_appears * (1.0 - p0)
 
     return PlayerProjection(
         element=element_id,
@@ -337,4 +363,5 @@ def project_player(
         minutes=minutes,
         breakdown=breakdown,
         variance=variance,
+        diagnostics=diagnostics,
     )

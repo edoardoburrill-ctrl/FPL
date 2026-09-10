@@ -455,10 +455,16 @@ transfer recommendations (`optimize/robustness.py`, §4) are now built: `fpl
 transfers --bootstrap N` and `fpl brief --bootstrap N` report what fraction of
 N bootstrap-perturbed re-solves choose the same transfer, using the per-term
 analytic variance `models/points.py` now carries alongside every expectation.
-Still open: wiring the simulation-based bonus into the fast path the optimiser
-uses, calibration reliability plots, and — the thing most likely to close the
-gap — re-running this backtest with real historical odds once that data
-source is identified. Hyperparameters (`γ`,
+Calibration reliability curves (`backtest/calibration.py`) are also built and
+run against the same real replay: `fpl backtest` reports a Brier score and
+calibration slope for P(60+ minutes), P(clean sheet) and P(any bonus). All
+three come back underconfident (slope 0.79, 0.83 and 0.50), which
+`DECISIONS.md` reads as the same root cause as the ranking finding above,
+confirmed from a second, independent angle — not a new problem to chase.
+Still open: wiring the simulation-based bonus into the fast path the
+optimiser uses, and — the thing most likely to close the gap — re-running
+this backtest with real historical odds once that data source is
+identified. Hyperparameters (`γ`,
 horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
 are still the values chosen at build time. *Ends with:* measured evidence the
 thing beats its baselines — which now exists, and currently argues for caution,
@@ -523,8 +529,9 @@ docs/
   PLAN.md  DESIGN.md  DECISIONS.md
 ```
 
-Not yet built, and planned for Phase 3: `models/simulate.py` (Monte Carlo engine),
-`models/bps.py` (ranked bonus), `backtest/replay.py` and `backtest/metrics.py`.
+Phase 3 has since added `models/simulate.py` (Monte Carlo engine), `models/bps.py`
+(ranked bonus), and `backtest/{adapter,replay,metrics,calibration}.py` — see
+`DESIGN.md` for the layout as actually built, which this section predates.
 
 Stack: Python 3.11, `httpx`, `numpy`, `scipy`, `pandas`, `pulp` (CBC), `typer`,
 `rich`, `pytest`. No paid dependencies; the odds API free tier is sufficient.

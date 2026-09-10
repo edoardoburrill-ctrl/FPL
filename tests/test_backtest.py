@@ -4,6 +4,8 @@ project; the real validation claim (see DECISIONS.md) is run interactively and
 its result is recorded there, not re-derived on every test run.
 """
 
+import numpy as np
+
 from fpl.backtest.adapter import load_season, snapshot_as_of
 from fpl.backtest.metrics import GameweekResult, SeasonReport
 from fpl.backtest.replay import replay_season
@@ -114,6 +116,24 @@ def test_replay_season_produces_a_scoreable_report():
     # Every prediction must have a corresponding real outcome, pairwise.
     for gw in report.gameweeks:
         assert len(gw.predicted) == len(gw.actual) == len(gw.xp_baseline)
+
+
+def test_replay_season_records_calibration_data():
+    report = replay_season("test", start_gameweek=2, end_gameweek=3,
+                           client=FakeClient())
+    # p_60_plus is populated by the minutes model for every scored
+    # player-gameweek; the others depend on rates the synthetic universe may
+    # or may not have fitted, so only assert on the one that's guaranteed.
+    predicted, actual = report._pooled_calibration("p_60_plus")
+    assert len(predicted) == report.n
+    assert len(actual) == report.n
+    assert all(0.0 <= p <= 1.0 for p in predicted)
+    assert all(isinstance(a, (bool, np.bool_)) for a in actual)
+
+    # The summary and scoring helpers must not blow up on this small season,
+    # with or without data for a given component.
+    assert "Calibration" in report.calibration_summary()
+    assert not np.isnan(report.brier("p_60_plus"))
 
 
 def test_replay_season_skips_players_who_did_not_play():

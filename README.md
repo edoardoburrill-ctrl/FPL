@@ -105,8 +105,16 @@ gameweeks, while FPL's `xP` correctly rotated to whoever had the standout
 fixture that week. The likely cause: with no odds data in this backtest (the
 market-anchored path was never exercised), the fallback team-strength model
 doesn't swing a fixture's goal expectation sharply enough to let a good-fixture
-week overtake a highly-rated player's season-long baseline. Full evidence and
-what that means for trusting `fpl brief`'s captain pick right now:
+week overtake a highly-rated player's season-long baseline.
+
+`fpl backtest` also reports calibration — for every player-gameweek, does the
+model's P(60+ minutes), P(clean sheet) and P(any bonus) match what actually
+happened? Run against the same 2024-25 replay, all three come back
+**underconfident** (calibration slope 0.79, 0.83 and 0.50 respectively; 1.0
+is calibrated). That is the same root cause as the ranking finding above,
+confirmed from a second, independent angle: a probability that barely moves
+between an easy and a hard fixture is underconfident on both. Full evidence
+and what that means for trusting `fpl brief`'s captain pick right now:
 [`docs/DECISIONS.md`](docs/DECISIONS.md) and [`docs/TODO.md`](docs/TODO.md).
 
 ## Automation

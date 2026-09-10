@@ -46,12 +46,20 @@ class SeasonData:
     max_gameweek: int = 0
 
     def actuals(self, gameweek: int) -> dict[int, dict]:
-        """Real outcomes for one gameweek: element -> {total_points, xP, minutes}."""
+        """Real outcomes for one gameweek: element -> stat line.
+
+        `clean_sheets` and `bonus` are read straight from the archive, the
+        same source `total_points` already comes from, for
+        `backtest/calibration.py` to check the projection engine's
+        probabilities against.
+        """
         return {
             int(r["element"]): {
                 "total_points": _num(r, "total_points"),
                 "xP": _num(r, "xP"),
                 "minutes": _num(r, "minutes"),
+                "clean_sheets": _num(r, "clean_sheets"),
+                "bonus": _num(r, "bonus"),
             }
             for r in self.rows
             if int(r.get("GW", 0) or 0) == gameweek

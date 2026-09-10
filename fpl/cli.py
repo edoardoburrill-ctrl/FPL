@@ -690,6 +690,11 @@ def backtest(
     points assembly — against real outcomes. It does not replay the optimiser's
     transfer decisions with a real squad and budget, which is a larger, separate
     piece of work.
+
+    Also reports calibration: for every player-gameweek, checks the model's
+    P(60+ minutes), P(clean sheet) and P(any bonus) against what actually
+    happened — PLAN.md §6 is explicit that this matters more than raw
+    accuracy, since the optimiser consumes probabilities, not just means.
     """
     console.print(f"Replaying {season} from GW{start_gw}"
                  f"{f' to GW{end_gw}' if end_gw else ''} (no lookahead)...")
@@ -710,6 +715,8 @@ def backtest(
 
     console.print()
     console.print(report.summary())
+    console.print()
+    console.print(report.calibration_summary())
 
 
 @app.command()

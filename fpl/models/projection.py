@@ -311,7 +311,8 @@ def project_gameweek(
             breakdown={},
         )
 
-        for fixture, is_home in by_team.get(team, []):
+        team_fixtures = by_team.get(team, [])
+        for fixture, is_home in team_fixtures:
             lam_home, lam_away = goal_rates[int(fixture["id"])]
             team_goals = lam_home if is_home else lam_away
             opponent_goals = lam_away if is_home else lam_home
@@ -335,6 +336,13 @@ def project_gameweek(
             # Independent fixtures (a double gameweek), so variances add too.
             for key, value in single.variance.items():
                 combined.variance[key] = combined.variance.get(key, 0.0) + value
+            # Diagnostics are per-fixture probabilities (P(clean sheet), ...),
+            # not additive quantities — combining two into one number needs a
+            # real choice (P(at least one)? expected count?) that calibration
+            # doesn't need answered. Leave them empty for a double gameweek
+            # rather than merge them into something misleading.
+            if len(team_fixtures) == 1:
+                combined.diagnostics = dict(single.diagnostics)
 
         projections[element_id] = combined
 
