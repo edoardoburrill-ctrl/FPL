@@ -73,6 +73,7 @@ fpl squad                          # your squad, selling prices, bank, chips, fr
 fpl set-squad "..." --bank 0.5     # record your squad by hand, no entry id required
 fpl explain haaland                # term-by-term breakdown of a projection
 fpl transfers --horizon 5          # multi-gameweek transfer plan
+fpl transfers --bootstrap 30       # + how often each transfer survives resampled noise (slow)
 fpl brief                          # the one command: what to do before this deadline
 fpl brief --markdown               # same, as markdown for a report or job summary
 fpl chips --horizon 8              # when to play each chip, measured in points
@@ -88,7 +89,9 @@ from the local cache, so projections and analysis work offline.
 Solve times on a full player pool: `brief` and `transfers` take around twenty
 seconds, `chips` around two minutes over six gameweeks. `--restructuring` adds a
 full re-solve per candidate gameweek and takes considerably longer, which is why
-it is opt-in.
+it is opt-in. `--bootstrap N` is similarly opt-in: it is `N` extra full re-solves
+against noise-perturbed projections, to report how often a recommended transfer
+survives resampling rather than being a coin-flip dressed up as a plan.
 
 ## Backtest result — read before trusting a captaincy pick
 

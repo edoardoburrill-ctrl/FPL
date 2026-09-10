@@ -11,6 +11,7 @@ from fpl.models.points import (
     project_player,
     threshold_probability,
 )
+from fpl.models.points import _bernoulli_variance, _bonus_variance, _poisson_linear_variance
 from fpl.models.scoring import DEF, FWD, GK, MID, ScoringRules
 from fpl.models.team_strength import conceded_distribution, score_matrix
 
@@ -102,6 +103,47 @@ def test_defcon_rewards_the_high_volume_defender():
     hi = project_player(2, DEF, NAILED, high, 1.6, 1.1, pmf, RULES)
     assert hi.breakdown["defensive_contribution"] > lo.breakdown["defensive_contribution"]
     assert hi.breakdown["defensive_contribution"] <= RULES.defcon_points
+
+
+def test_bernoulli_and_poisson_variance_helpers_match_hand_computation():
+    # A coin-flip worth 4 points: Var = 4^2 * 0.5 * 0.5 = 4.
+    assert _bernoulli_variance(0.5, 4.0) == pytest.approx(4.0)
+    # A certain or impossible event has zero variance.
+    assert _bernoulli_variance(1.0, 4.0) == pytest.approx(0.0)
+    assert _bernoulli_variance(0.0, 4.0) == pytest.approx(0.0)
+    # Poisson(rate) scaled by `value`: Var = value^2 * rate.
+    assert _poisson_linear_variance(2.0, 5.0) == pytest.approx(50.0)
+    assert _poisson_linear_variance(0.0, 5.0) == pytest.approx(0.0)
+
+
+def test_bonus_variance_is_zero_with_no_expected_bps_or_no_appearance_chance():
+    assert _bonus_variance(0.0, 0.9) == 0.0
+    # Certain not to appear means certain to score zero bonus: no variance.
+    assert _bonus_variance(25.0, 0.0) == pytest.approx(0.0)
+    assert _bonus_variance(25.0, 0.5) > 0.0
+    assert _bonus_variance(25.0, 0.9) > 0.0
+
+
+def test_projection_carries_a_nonnegative_variance_per_term_and_in_total():
+    rates = PlayerRates(goals_share=0.3, assists_share=0.1, defcon_per_90=6.0,
+                        bps_per_90=25, yellow_per_90=0.3, red_per_90=0.02)
+    projection = project_player(1, MID, NAILED, rates, 1.8, 1.0, _conceded(), RULES)
+    assert projection.variance  # every active term contributed an entry
+    assert set(projection.variance) <= set(projection.breakdown)
+    for term, value in projection.variance.items():
+        assert value >= 0.0, term
+    assert projection.point_variance == pytest.approx(sum(projection.variance.values()))
+    assert projection.point_std == pytest.approx(np.sqrt(projection.point_variance))
+
+
+def test_a_cameo_is_relatively_noisier_than_a_nailed_starter():
+    """Uncertainty as a share of the mean should be higher for a fringe player."""
+    rates = PlayerRates(goals_share=0.3, assists_share=0.15, bps_per_90=28)
+    starter = project_player(1, MID, NAILED, rates, 1.8, 1.0, _conceded(), RULES)
+    sub = project_player(2, MID, CAMEO, rates, 1.8, 1.0, _conceded(), RULES)
+    starter_cv = starter.point_std / max(starter.expected_points, 1e-6)
+    sub_cv = sub.point_std / max(sub.expected_points, 1e-6)
+    assert sub_cv > starter_cv
 
 
 def test_projection_explains_itself():

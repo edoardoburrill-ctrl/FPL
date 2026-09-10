@@ -46,10 +46,24 @@ class PlayerProjection:
     position: int
     minutes: MinutesForecast
     breakdown: dict[str, float] = field(default_factory=dict)
+    # Variance of each breakdown term, computed from the same distributions used
+    # for its mean (Binomial appearance/clean-sheet/defcon, Poisson goals/assists/
+    # saves/conceded, the bonus normal approximation) — see `_bernoulli_variance`
+    # and friends below. Terms are summed as if independent, the same
+    # simplification the means already make of each other.
+    variance: dict[str, float] = field(default_factory=dict)
 
     @property
     def expected_points(self) -> float:
         return float(sum(self.breakdown.values()))
+
+    @property
+    def point_variance(self) -> float:
+        return float(sum(self.variance.values()))
+
+    @property
+    def point_std(self) -> float:
+        return float(np.sqrt(max(self.point_variance, 0.0)))
 
     def explain(self) -> str:
         parts = [
@@ -116,6 +130,41 @@ def expected_saves_points(expected_saves: float, per_point: int = 3) -> float:
     return float(np.sum(poisson.pmf(s, expected_saves) * (s // per_point)))
 
 
+def _variance_conceded_penalty(
+    conceded_pmf: np.ndarray, minutes_fraction: float, per_penalty: int = 2
+) -> float:
+    """Var[floor(conceded / 2)] over the on-pitch conceded distribution."""
+    pmf = _conceded_while_on_pitch(conceded_pmf, minutes_fraction)
+    values = np.arange(len(pmf)) // per_penalty
+    mean = float(np.sum(pmf * values))
+    second_moment = float(np.sum(pmf * values**2))
+    return max(0.0, second_moment - mean**2)
+
+
+def _variance_saves_points(expected_saves: float, per_point: int = 3) -> float:
+    """Var[floor(S / 3)] for S ~ Poisson(expected_saves)."""
+    if expected_saves <= 0:
+        return 0.0
+    max_s = int(expected_saves + 8 * np.sqrt(expected_saves) + 10)
+    s = np.arange(max_s + 1)
+    pmf = poisson.pmf(s, expected_saves)
+    values = s // per_point
+    mean = float(np.sum(pmf * values))
+    second_moment = float(np.sum(pmf * values**2))
+    return max(0.0, second_moment - mean**2)
+
+
+def _bernoulli_variance(probability: float, value: float) -> float:
+    """Var[value] for an event worth `value` points with the given probability."""
+    p = float(np.clip(probability, 0.0, 1.0))
+    return (value**2) * p * (1.0 - p)
+
+
+def _poisson_linear_variance(rate: float, value: float) -> float:
+    """Var[value * N] for N ~ Poisson(rate)."""
+    return (value**2) * max(rate, 0.0)
+
+
 def threshold_probability(rate_per_90: float, minutes: float, threshold: int) -> float:
     """P(count >= threshold) for a Poisson rate over a given number of minutes."""
     if minutes <= 0 or rate_per_90 <= 0:
@@ -138,6 +187,34 @@ def expected_bonus(expected_bps: float) -> float:
     return float(
         sum(norm.sf(threshold, loc=expected_bps, scale=spread) for threshold in BONUS_THRESHOLDS)
     )
+
+
+def _bonus_variance(expected_bps: float, p_appears: float) -> float:
+    """Var[bonus points], consistent with `expected_bonus`'s normal approximation.
+
+    Bonus is a step function of a single normal draw (BPS vs. the three
+    thresholds), so it takes values 0-3 with probabilities read off that
+    normal's CDF at each threshold — giving an exact variance for that
+    approximation, not another layer of it. `expected_bonus` gates the mean by
+    `p_appears`; here that gate is treated as an independent Bernoulli on top
+    of the bonus draw (`Var[A*B] = p*Var[B] + p(1-p)*E[B]^2` for independent
+    `A ~ Bernoulli(p)`, `B`), which is not monotone in `p` — losing the "does
+    he even appear" variance as `p -> 1` competes with the gate's own variance
+    peaking at `p = 0.5`.
+    """
+    if expected_bps <= 0:
+        return 0.0
+    spread = np.sqrt(BONUS_PLAYER_SD**2 + BONUS_THRESHOLD_SD**2)
+    edges = [-np.inf, *BONUS_THRESHOLDS, np.inf]
+    cdfs = [norm.cdf(edge, loc=expected_bps, scale=spread) for edge in edges]
+    probs = np.array([cdfs[i + 1] - cdfs[i] for i in range(4)])
+    values = np.array([0.0, 1.0, 2.0, 3.0])
+    mean_given_appear = float(np.sum(probs * values))
+    second_given_appear = float(np.sum(probs * values**2))
+    var_given_appear = max(0.0, second_given_appear - mean_given_appear**2)
+
+    p = float(np.clip(p_appears, 0.0, 1.0))
+    return p * var_given_appear + p * (1.0 - p) * mean_given_appear**2
 
 
 @dataclass(frozen=True)
@@ -173,14 +250,22 @@ def project_player(
     taken from the Dixon-Coles score matrix.
     """
     breakdown: dict[str, float] = {}
+    variance: dict[str, float] = {}
     minutes_fraction = float(np.clip(minutes.expected_minutes / 90.0, 0.0, 1.0))
 
     breakdown["appearance"] = minutes.expected_appearance_points
+    # Appearance points are 0, 1 or 2 with known probabilities straight from the
+    # minutes forecast — no approximation needed for this one.
+    second_moment = minutes.p_1_to_59 * 1.0 + minutes.p_60plus * 4.0
+    variance["appearance"] = max(0.0, second_moment - minutes.expected_appearance_points**2)
 
     expected_goals = rates.goals_share * team_goals * minutes_fraction
     expected_assists = rates.assists_share * team_goals * minutes_fraction
-    breakdown["goals"] = expected_goals * rules.goal.get(position, 0)
+    goal_value = rules.goal.get(position, 0)
+    breakdown["goals"] = expected_goals * goal_value
+    variance["goals"] = _poisson_linear_variance(expected_goals, goal_value)
     breakdown["assists"] = expected_assists * rules.assist
+    variance["assists"] = _poisson_linear_variance(expected_assists, rules.assist)
 
     cs_points = rules.clean_sheet.get(position, 0)
     if cs_points:
@@ -193,10 +278,15 @@ def project_player(
                 np.clip(minutes.expected_minutes / 90.0 / max(minutes.p_60plus, 1e-6), 0.0, 1.0)
             )
         cs_prob = clean_sheet_probability_on_pitch(conceded_pmf, start_fraction)
-        breakdown["clean_sheet"] = cs_points * minutes.p_60plus * cs_prob
+        p_cs = minutes.p_60plus * cs_prob
+        breakdown["clean_sheet"] = cs_points * p_cs
+        variance["clean_sheet"] = _bernoulli_variance(p_cs, cs_points)
 
     if position in rules.conceded_penalty_positions:
         breakdown["goals_conceded"] = -expected_conceded_penalty(
+            conceded_pmf, minutes_fraction, rules.conceded_per_penalty
+        )
+        variance["goals_conceded"] = _variance_conceded_penalty(
             conceded_pmf, minutes_fraction, rules.conceded_per_penalty
         )
 
@@ -206,6 +296,7 @@ def project_player(
         intensity = opponent_goals / max(league_average_conceded, 1e-6)
         expected_saves = rates.saves_per_90 * minutes_fraction * intensity
         breakdown["saves"] = expected_saves_points(expected_saves, rules.saves_per_point)
+        variance["saves"] = _variance_saves_points(expected_saves, rules.saves_per_point)
 
     threshold = rules.defcon_threshold.get(position)
     if threshold is not None and rates.defcon_per_90 > 0:
@@ -216,14 +307,20 @@ def project_player(
             minutes.expected_minutes / max(minutes.p_start + minutes.p_bench, 1e-6)
         )
         p_hit = threshold_probability(rates.defcon_per_90, minutes_if_start, threshold)
-        breakdown["defensive_contribution"] = (
-            rules.defcon_points * minutes.p_start * p_hit
+        p_defcon = minutes.p_start * p_hit
+        breakdown["defensive_contribution"] = rules.defcon_points * p_defcon
+        variance["defensive_contribution"] = _bernoulli_variance(
+            p_defcon, rules.defcon_points
         )
 
     if rates.yellow_per_90:
-        breakdown["cards"] = rules.yellow_card * rates.yellow_per_90 * minutes_fraction
+        yellow_rate = rates.yellow_per_90 * minutes_fraction
+        breakdown["cards"] = rules.yellow_card * yellow_rate
+        variance["cards"] = _poisson_linear_variance(yellow_rate, rules.yellow_card)
         if rates.red_per_90:
-            breakdown["cards"] += rules.red_card * rates.red_per_90 * minutes_fraction
+            red_rate = rates.red_per_90 * minutes_fraction
+            breakdown["cards"] += rules.red_card * red_rate
+            variance["cards"] += _poisson_linear_variance(red_rate, rules.red_card)
 
     if rates.bps_per_90:
         # Expected BPS scales with minutes and with how good the fixture is,
@@ -231,6 +328,7 @@ def project_player(
         fixture_multiplier = 0.5 + 0.5 * (team_goals / max(league_average_conceded, 1e-6))
         expected_bps = rates.bps_per_90 * minutes_fraction * fixture_multiplier
         breakdown["bonus"] = expected_bonus(expected_bps) * minutes.p_appears
+        variance["bonus"] = _bonus_variance(expected_bps, minutes.p_appears)
 
     return PlayerProjection(
         element=element_id,
@@ -238,4 +336,5 @@ def project_player(
         position=position,
         minutes=minutes,
         breakdown=breakdown,
+        variance=variance,
     )

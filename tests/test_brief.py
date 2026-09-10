@@ -5,7 +5,13 @@ import pytest
 from fpl.models.projection import build_context
 from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
 from fpl.optimize.milp import Decision, Player, optimise, prune_pool
-from fpl.report.brief import COIN_FLIP_MARGIN, build_brief, deadline_for, pair_transfers
+from fpl.report.brief import (
+    COIN_FLIP_MARGIN,
+    TransferMove,
+    build_brief,
+    deadline_for,
+    pair_transfers,
+)
 from fpl.state.ledger import Holding, SquadState
 from tests.fixtures.synthetic import build_universe
 
@@ -86,6 +92,47 @@ def test_brief_finds_an_obvious_upgrade(setup, optimal_state):
     assert brief.gain_is_meaningful
     assert brief.moves[0].out_element == int(replacement["id"])
     assert brief.hits == 0, "an obvious free-transfer upgrade should not cost a hit"
+
+
+def test_bootstrap_resamples_report_transfer_stability(setup, optimal_state):
+    """An obvious, deterministic upgrade should still turn up in the stability
+    report once bootstrap resampling is switched on."""
+    ctx, gameweeks, projections, players = setup
+    prices = {int(e["id"]): int(e["now_cost"]) for e in ctx.elements}
+
+    premium = max(optimal_state.holdings, key=lambda h: h.purchase_price)
+    position = int(ctx.element(premium.element)["element_type"])
+    replacement = min(
+        (
+            e for e in ctx.elements
+            if int(e["element_type"]) == position
+            and int(e["id"]) not in optimal_state.element_ids
+        ),
+        key=lambda e: int(e["now_cost"]),
+    )
+    degraded = SquadState(
+        entry_id=1, gameweek=2,
+        holdings=[h for h in optimal_state.holdings if h.element != premium.element]
+        + [Holding(int(replacement["id"]), int(replacement["now_cost"]), 1)],
+        bank=optimal_state.bank + premium.purchase_price - int(replacement["now_cost"]),
+        free_transfers=1,
+    )
+
+    brief = build_brief(ctx, degraded, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT, bootstrap_resamples=5, bootstrap_seed=0)
+    assert brief.recommends_transfer
+    assert brief.stability, "bootstrap was requested but produced no stability data"
+    frequency = brief.stability_for(brief.moves[0])
+    assert frequency is not None
+    assert 0.0 <= frequency <= 1.0
+
+
+def test_bootstrap_off_by_default_leaves_stability_empty(setup, optimal_state):
+    ctx, gameweeks, projections, players = setup
+    brief = build_brief(ctx, optimal_state, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT)
+    assert brief.stability == {}
+    assert brief.stability_for(TransferMove(1, 2, "a", "b", 50, 50)) is None
 
 
 def test_brief_reports_the_squad_it_actually_picked(setup, optimal_state):

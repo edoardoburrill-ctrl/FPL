@@ -450,11 +450,15 @@ and has been run against 2024-25. Its result is the headline of this phase: the
 projection engine beats a do-nothing baseline but currently **loses to FPL's
 own `xP`** on ranking and badly on captaincy-pick quality — see
 `DECISIONS.md` for the full numbers and the working theory (no odds data, no
-injury signal, both structural gaps in this specific backtest). Still open:
-wiring the simulation-based bonus into the fast path the optimiser uses,
-bootstrap-robust transfer recommendations, calibration reliability plots, and —
-the thing most likely to close the gap — re-running this backtest with real
-historical odds once that data source is identified. Hyperparameters (`γ`,
+injury signal, both structural gaps in this specific backtest). Bootstrap-robust
+transfer recommendations (`optimize/robustness.py`, §4) are now built: `fpl
+transfers --bootstrap N` and `fpl brief --bootstrap N` report what fraction of
+N bootstrap-perturbed re-solves choose the same transfer, using the per-term
+analytic variance `models/points.py` now carries alongside every expectation.
+Still open: wiring the simulation-based bonus into the fast path the optimiser
+uses, calibration reliability plots, and — the thing most likely to close the
+gap — re-running this backtest with real historical odds once that data
+source is identified. Hyperparameters (`γ`,
 horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
 are still the values chosen at build time. *Ends with:* measured evidence the
 thing beats its baselines — which now exists, and currently argues for caution,
@@ -501,6 +505,8 @@ fpl/
     milp.py                 # §4 multi-gameweek program, chips included
     chips.py                # chip calendar and eligibility
     inputs.py               # context + state -> optimiser inputs
+    transfers.py            # Decision -> manager-readable sell/buy pairs
+    robustness.py           # §4 Robustness: bootstrap-perturbed re-solves
   state/
     ledger.py               # §5 squad, purchase prices, free transfers
     resolve.py              # name resolution for manual squad entry

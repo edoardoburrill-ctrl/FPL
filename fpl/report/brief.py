@@ -8,23 +8,15 @@ from typing import Mapping, Sequence
 
 from fpl.models.points import PlayerProjection
 from fpl.models.projection import ProjectionContext
-from fpl.optimize.milp import Decision, Plan, Player, optimise, prune_pool
+from fpl.optimize.milp import Plan, Player, optimise, prune_pool
+from fpl.optimize.robustness import bootstrap_transfer_stability
+from fpl.optimize.transfers import TransferMove, pair_transfers  # re-exported below
 from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
 # A transfer worth less than this over the whole horizon is noise, not an edge.
 MEANINGFUL_GAIN = 0.75
 # Two captaincy options this close are a coin-flip, whatever the ranking says.
 COIN_FLIP_MARGIN = 0.35
-
-
-@dataclass
-class TransferMove:
-    out_element: int
-    in_element: int
-    out_name: str
-    in_name: str
-    out_sell_price: int
-    in_buy_price: int
 
 
 @dataclass
@@ -46,10 +38,16 @@ class Brief:
     bank: float
     chips_available: list[str]
     warnings: list[str] = field(default_factory=list)
+    # (out_element, in_element) -> fraction of bootstrap resamples that chose
+    # this exact transfer. Empty unless `build_brief` was asked to bootstrap.
+    stability: dict[tuple[int, int], float] = field(default_factory=dict)
 
     @property
     def recommends_transfer(self) -> bool:
         return bool(self.moves)
+
+    def stability_for(self, move: TransferMove) -> float | None:
+        return self.stability.get((move.out_element, move.in_element))
 
     @property
     def gain_is_meaningful(self) -> bool:
@@ -72,34 +70,6 @@ def deadline_for(ctx: ProjectionContext, gameweek: int) -> datetime | None:
     return None
 
 
-def pair_transfers(
-    decision: Decision, players: Mapping[int, Player]
-) -> list[TransferMove]:
-    """Pair sales with purchases by position, which is how a manager reads them.
-
-    The optimiser only knows it bought three players and sold three; presenting
-    that as "sell X, buy Y" needs the positional pairing that the squad-shape
-    constraint guarantees exists.
-    """
-    outgoing = sorted(decision.transfers_out, key=lambda e: players[e].position)
-    incoming = sorted(decision.transfers_in, key=lambda e: players[e].position)
-
-    moves: list[TransferMove] = []
-    for out_element, in_element in zip(outgoing, incoming):
-        out_player, in_player = players[out_element], players[in_element]
-        moves.append(
-            TransferMove(
-                out_element=out_element,
-                in_element=in_element,
-                out_name=out_player.name,
-                in_name=in_player.name,
-                out_sell_price=out_player.sell_price,
-                in_buy_price=in_player.buy_price,
-            )
-        )
-    return moves
-
-
 def build_brief(
     ctx: ProjectionContext,
     state: SquadState,
@@ -111,8 +81,17 @@ def build_brief(
     max_hits: int = 2,
     wildcard_gameweek: int | None = None,
     time_limit: float = 90.0,
+    bootstrap_resamples: int = 0,
+    bootstrap_seed: int = 0,
 ) -> Brief:
-    """Solve the horizon, then solve it again holding, and compare."""
+    """Solve the horizon, then solve it again holding, and compare.
+
+    `bootstrap_resamples`, if positive, re-solves the horizon that many times
+    against bootstrap-perturbed projections and reports what fraction of
+    resamples chose the same transfer — see `optimize/robustness.py`. It is
+    off by default: it costs one extra full re-solve per resample, the same
+    cost class as `fpl chips --restructuring`.
+    """
     gameweek = gameweeks[0]
     pool = prune_pool(players, gameweeks, always_include=state.element_ids)
     by_id = {p.element: p for p in pool}
@@ -151,6 +130,24 @@ def build_brief(
 
     decision = plan.first()
     gain = plan.objective - (hold.objective if hold.solved else plan.objective)
+    moves = pair_transfers(decision, by_id)
+
+    stability: dict[tuple[int, int], float] = {}
+    if bootstrap_resamples and moves:
+        # Resampling needs its own, much shorter time budget per solve: at
+        # `n_resamples` solves, inheriting the headline `time_limit` would
+        # make this take `n_resamples` times as long as the plan it is
+        # checking. `bootstrap_transfer_stability` already defaults sensibly.
+        bootstrap_kwargs = {k: v for k, v in common.items() if k != "time_limit"}
+        bootstrap_kwargs["wildcard_gameweek"] = wildcard_gameweek
+        results = bootstrap_transfer_stability(
+            pool, gameweeks, moves,
+            n_resamples=bootstrap_resamples, seed=bootstrap_seed,
+            **bootstrap_kwargs,
+        )
+        stability = {
+            (r.move.out_element, r.move.in_element): r.frequency for r in results
+        }
 
     ranked = sorted(
         decision.starting,
@@ -183,7 +180,7 @@ def build_brief(
         deadline=deadline_for(ctx, gameweek),
         plan=plan,
         hold_plan=hold,
-        moves=pair_transfers(decision, by_id),
+        moves=moves,
         gain=gain,
         captain=decision.captain,
         vice=decision.vice,
@@ -196,6 +193,7 @@ def build_brief(
         bank=decision.bank,
         chips_available=state.chips_available(gameweek),
         warnings=warnings,
+        stability=stability,
     )
 
 
@@ -229,12 +227,16 @@ def render_markdown(
         )
     else:
         for move in brief.moves:
-            lines.append(
+            line = (
                 f"- Sell **{names.get(move.out_element, move.out_element)}** "
                 f"(£{move.out_sell_price/10:.1f}m) → buy "
                 f"**{names.get(move.in_element, move.in_element)}** "
                 f"(£{move.in_buy_price/10:.1f}m)"
             )
+            frequency = brief.stability_for(move)
+            if frequency is not None:
+                line += f" — chosen in {frequency:.0%} of bootstrap resamples"
+            lines.append(line)
         cost = (
             f"{brief.hits} hit ({-brief.hits * TRANSFER_HIT_COST} pts)"
             if brief.hits

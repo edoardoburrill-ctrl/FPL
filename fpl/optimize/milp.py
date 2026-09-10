@@ -66,6 +66,7 @@ class Player:
     sell_price: int  # what *you* would get for him, from the ledger
     points: Mapping[int, float]  # gameweek -> expected points
     appearance: Mapping[int, float] = field(default_factory=dict)  # gw -> P(plays any minutes)
+    std: Mapping[int, float] = field(default_factory=dict)  # gw -> point_std, for bootstrap resampling
     name: str = ""
 
     def ep(self, gameweek: int) -> float:

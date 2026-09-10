@@ -412,6 +412,44 @@ convert the chance he gets" half, not the "does a chance arise" half.
 
 ---
 
+## Bootstrap-robust transfer recommendations
+
+**Decided:** give every breakdown term in `models/points.py` an analytic
+variance alongside its mean, sum them into `PlayerProjection.point_std`
+(terms treated as independent, the same simplification the means already
+make of each other), thread it through to the optimiser's `Player`, and add
+`optimize/robustness.py`: re-solve the horizon `n_resamples` times against
+projections perturbed by `Normal(0, point_std)`, and report what fraction of
+resamples chose the same `(sell, buy)` pair as the point-estimate plan. This
+is exactly the mechanism PLAN.md's §4 "Robustness" section describes; it was
+written into the plan but not built until now. `fpl transfers --bootstrap N`
+and `fpl brief --bootstrap N` surface it (default off — it is `N` extra full
+re-solves, the same cost class as `fpl chips --restructuring`).
+
+**Alternative — draw the resamples from `models/simulate.py` instead.** The
+Monte Carlo engine already produces a proper per-player sample and would give
+a more honest variance (real correlations, the ranked-BPS bonus, no
+independent-terms assumption). Rejected for this use *specifically* because
+`simulate.py`'s own docstring is explicit that it is "not what the optimiser
+prunes hundreds of players against" — it is priced for a shortlist, not a
+few-hundred-player pool repeated `n_resamples` times over a multi-gameweek
+horizon. The analytic variance is cheap enough to attach to every projection
+by default, which the simulation is not. If the fast-path bonus rewrite
+below ever happens, revisiting this with simulation-drawn resamples for a
+shortlist-sized robustness check is worth doing then.
+
+**Why sum term variances as independent when the terms are not.** Goals and
+assists both scale with the same fixture goal expectation, so they are
+positively correlated in reality; treating them as independent understates
+the true variance somewhat. This is the same simplification `project_player`
+already makes for the *means* (each term computed as its own expectation,
+not as a joint draw), so it is not a new source of approximation, and the
+resulting `point_std` only needs to rank "how much noise is on this pick"
+well enough to separate an obvious transfer from a coin-flip — not to be a
+precise number in its own right.
+
+---
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
@@ -424,6 +462,10 @@ convert the chance he gets" half, not the "does a chance arise" half.
   squad revert is not modelled.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
-- **Nothing is calibrated against reality yet.** Every number here is validated
-  against generated data or internal consistency. The backtest is Phase 3, and
-  until it exists these models are plausible rather than proven.
+- **No calibration reliability plots yet.** The backtest (above) validates
+  the projection engine's ranking and error against real 2024-25 outcomes,
+  but there is no per-output reliability curve ("of the player-gameweeks we
+  said were 20% to reach a haul, did 20% actually do it?") for clean sheets,
+  defensive contributions, or bonus specifically. PLAN.md §6 calls for one
+  per probabilistic output; only the headline MAE/Spearman/top-pick numbers
+  exist today.

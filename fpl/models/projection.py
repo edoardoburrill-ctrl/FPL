@@ -332,6 +332,9 @@ def project_gameweek(
             )
             for key, value in single.breakdown.items():
                 combined.breakdown[key] = combined.breakdown.get(key, 0.0) + value
+            # Independent fixtures (a double gameweek), so variances add too.
+            for key, value in single.variance.items():
+                combined.variance[key] = combined.variance.get(key, 0.0) + value
 
         projections[element_id] = combined
 

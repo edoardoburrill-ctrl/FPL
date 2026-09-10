@@ -118,6 +118,12 @@ def test_double_gameweek_roughly_doubles(context, universe):
     double_total = sum(double[i].expected_points for i in team_one)
     assert 1.6 * single_total < double_total < 2.4 * single_total
 
+    # Two independent fixtures should raise a player's point variance too, not
+    # just his mean — the optimiser's bootstrap resampling depends on this.
+    single_variance = sum(single[i].point_variance for i in team_one)
+    double_variance = sum(double[i].point_variance for i in team_one)
+    assert double_variance > single_variance
+
 
 def test_odds_shift_the_goal_expectation(context, universe):
     """Market odds must actually move the fixture, not be quietly ignored."""
