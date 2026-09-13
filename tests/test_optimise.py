@@ -208,6 +208,74 @@ def test_wildcard_does_not_consume_the_free_transfer():
     assert plan.decisions[1].free_transfers == 2
 
 
+def test_free_hit_allows_a_full_rebuild_without_hits():
+    points = {e: 2.0 for e in range(1, 43)}
+    for e in range(28, 34):
+        points[e] = 9.0
+    players = make_pool(points)
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    decision = solve(players, current_squad=squad, bank=0, free_transfers=1,
+                     freehit_gameweek=1).first()
+    assert decision.chip == "freehit"
+    assert decision.hits == 0
+    assert decision.transfer_count > 2
+
+
+def test_free_hit_squad_reverts_next_gameweek():
+    """The whole point of a real Free Hit: gameweek 2 starts from the squad
+    gameweek 1 would have had if the chip had never been played, not from the
+    one-week rebuild."""
+    points = {e: 2.0 for e in range(1, 43)}
+    for e in range(28, 34):
+        points[e] = 9.0  # much better, but only worth taking for one week
+    players = make_pool(points)
+    for player in players:
+        object.__setattr__(player, "points", {1: points.get(player.element, 2.0), 2: 2.0})
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    plan = solve(players, gameweeks=(1, 2), current_squad=squad, bank=0,
+                 free_transfers=1, freehit_gameweek=1)
+    gw1, gw2 = plan.decisions
+    assert gw1.chip == "freehit"
+    assert len(set(gw1.transfers_in) & set(range(28, 34))) >= 5
+    # Nobody is worth keeping in gameweek 2 (their points drop back to 2.0),
+    # so the real squad should be exactly the pre-chip one, untouched.
+    assert sorted(gw2.squad) == sorted(squad)
+    assert gw2.transfer_count == 0
+
+
+def test_free_hit_does_not_consume_the_free_transfer_or_bank():
+    players = make_pool()
+    for player in players:
+        object.__setattr__(player, "points", {1: 2.0, 2: 2.0})
+    squad = [1, 2] + list(range(7, 12)) + list(range(21, 26)) + list(range(35, 38))
+
+    plan = solve(players, gameweeks=(1, 2), current_squad=squad, bank=0,
+                 free_transfers=1, freehit_gameweek=1)
+    assert plan.decisions[0].bank == 0.0
+    assert plan.decisions[1].free_transfers == 2
+
+
+def test_bench_weight_scales_with_the_players_own_appearance_chance():
+    """Two otherwise-identical backup keepers are told apart only by how
+    likely they are to actually feature if selected. Under a flat per-position
+    bench constant, the higher-scoring one always wins the bench spot; once
+    the weight is scaled by the minutes model's own P(plays at all), a backup
+    who almost never turns up should lose out to a lower-scoring nailed one."""
+    points = {e: 2.0 for e in range(1, 43)}
+    points[1] = 10.0  # the clear starting keeper
+    points[2] = 5.0   # scores well *if* selected, but rarely plays at all
+    players = make_pool(points)
+    for player in players:
+        if player.element == 2:
+            object.__setattr__(player, "p_appears", {1: 0.05})
+
+    decision = solve(players, bank=1000, free_transfers=1).first()
+    assert 1 in decision.starting
+    assert 2 not in decision.squad
+
+
 def test_pruning_keeps_owned_players_and_cheap_options():
     players = make_pool()
     object.__setattr__(players[0], "buy_price", 40)

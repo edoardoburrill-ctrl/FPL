@@ -391,20 +391,89 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Free Hit modelled explicitly, not bounded by wildcard semantics
+
+**Decided:** give the MILP a second, temporary squad/eleven/captain that
+exists only in the Free Hit gameweek — `fh_squad`, `fh_start`, `fh_buy`,
+`fh_sell`, `fh_captain` — funded from the bank position at that point in the
+horizon, while the persistent `squad`/`start`/`buy`/`sell` variables are
+frozen (`buy == sell == 0`) for that gameweek so they carry through unchanged
+to the gameweek after.
+
+**This corrects the previous approach**, which evaluated Free Hit by
+re-solving with `wildcard_gameweek` set — legal, since a Free Hit can afford
+anything a Wildcard in the same week could, but only an *upper bound*: a
+Wildcard's rebuild is permanent and a Free Hit's is not, and the two are
+identical only when the rebuilt squad happens to be worth nothing beyond that
+one week. `tests/test_chips.py::test_free_hit_is_worth_less_than_a_wildcard_for_a_lasting_upgrade`
+asserts the gap directly — build a squad of players who are excellent in both
+gameweeks of the horizon, and a Wildcard must now score strictly higher than a
+Free Hit, because only the Wildcard gets to keep them for the second week.
+
+## Bench weight scaled by the player's own appearance probability
+
+**Decided:** multiply the existing per-position bench-trigger rate by
+`Player.appears(gameweek)` — the minutes model's own `P(plays any minutes at
+all)` for that specific player-gameweek — rather than treating every bench
+player at a given position as equally likely to feature.
+
+**Alternative:** the flat per-position constant it replaced.
+
+The constant conflates two different probabilities into one number: how often
+some starter in that slot blanks and triggers an auto-sub (genuinely a
+property of the position, not this player), and whether *this specific* bench
+player would actually be on the pitch to benefit if it happens. A fringe
+squad player who is almost never used, even off the bench, was previously
+worth exactly as much bench value as a rotation option nearly guaranteed
+minutes once selected. `tests/test_optimise.py::
+test_bench_weight_scales_with_the_players_own_appearance_chance` demonstrates
+the fix directly: a 5-point backup keeper with a 5% chance of playing at all
+is now correctly passed over for a 2-point keeper who is actually nailed,
+which the old constant could not do since it saw only the 5 > 2 comparison.
+
+## Bonus thresholds fit against two real seasons, not guessed
+
+**Decided:** `models.bps.fit_bonus_thresholds` computes the median rank-1/2/3
+BPS cutoff and the pooled spread around those medians from the same 760 real
+matches (`data/historical.py`, 2023-24 and 2024-25) that verify the bonus tie
+rule, and `models/points.py`'s `BONUS_THRESHOLDS`/`BONUS_THRESHOLD_SD` are set
+from that fit: `(28, 32, 39)` and `8.9`, replacing the original hand-guessed
+`(24, 29, 35)` and `6.5`.
+
+This is the first hyperparameter in this codebase tuned against real outcomes
+rather than picked at build time — the first bite out of the "nothing is
+calibrated against reality yet" gap this section used to describe, before the
+backtest existed. `BONUS_PLAYER_SD` (a player's own BPS uncertainty for a
+*projected* fixture) is deliberately left alone: match outcome data is not a
+projection-residual distribution, so it cannot inform that term the way it
+informs the thresholds, and pretending otherwise would trade one unfounded
+number for another — the same reasoning `verify_plausibility` already applies
+to the BPS table itself.
+
+The fast analytic path (`points.py`, what the optimiser actually solves
+against) is still a normal approximation on expected BPS, not a ranked
+simulation — that trade only makes sense where `models/simulate.py`'s cost is
+affordable (a shortlist, for `fpl explain`), not inside the optimiser's
+per-candidate pruning loop. Calibrating the approximation's constants against
+real outcomes is the improvement available without paying that cost; it is
+a better approximation, not the simulation itself.
+
 ## Still open
 
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
-  still a normal approximation on expected BPS. `models/simulate.py` now
-  computes bonus properly — by simulating the match and ranking real BPS
-  draws with the verified tie rule — but it is not yet wired into the
-  optimiser's pruning path, which needs the fast path's speed. It is available
-  today for `fpl explain`-style enrichment of a shortlist.
-- **Free Hit** is evaluated with wildcard semantics — an upper bound, because the
-  squad revert is not modelled.
-- **Bench weights** are constants by position rather than the auto-sub
-  probability the minutes model could supply.
+  a calibrated normal approximation on expected BPS, not the ranked
+  simulation `models/simulate.py` can produce. Wiring the simulation into the
+  optimiser's pruning path remains future work, gated on the fast path's
+  speed requirement; simulation-based bonus is available today for
+  `fpl explain`-style enrichment of a shortlist.
 - **Prices are static** across the horizon. Price-change prediction is Phase 4
   and is worth far less than getting the points right.
-- **Nothing is calibrated against reality yet.** Every number here is validated
-  against generated data or internal consistency. The backtest is Phase 3, and
-  until it exists these models are plausible rather than proven.
+- **Hyperparameters are still mostly unfit against the backtest.** Bonus
+  thresholds are now the exception (see above). `γ` (horizon discount),
+  the horizon length, the minutes model's shrinkage strengths, and the team-
+  strength model's decay `ξ` remain the values chosen at build time, not
+  values the backtest has been used to tune. Re-running the backtest with
+  real historical odds — the change most likely to close the gap to FPL's own
+  `xP` described above — is the highest-priority next step for exactly this
+  reason: tuning against a backtest that itself lacks odds data would tune
+  toward the wrong target.

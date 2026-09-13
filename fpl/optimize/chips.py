@@ -13,7 +13,9 @@ bench that plays ahead of a Bench Boost, for instance.
 
 Wildcard and Free Hit restructure the problem rather than adding a term to it, so
 they are evaluated by re-solving the horizon with the chip active in each
-candidate gameweek and comparing.
+candidate gameweek and comparing. Free Hit's squad revert is modelled explicitly
+in the MILP (a temporary squad/eleven that never touches the persistent one), not
+approximated with wildcard semantics.
 """
 
 from __future__ import annotations
@@ -125,12 +127,8 @@ def chip_calendar(
             weeks = eligible_gameweeks(state, chip, gameweeks)
             best: ChipAdvice | None = None
             for gameweek in weeks:
-                # A Free Hit is a wildcard whose squad reverts, so over a horizon
-                # it is never better than a wildcard played in the same gameweek;
-                # evaluating it with wildcard semantics gives an upper bound on
-                # its value, which is the honest thing to report until the
-                # revert is modelled explicitly.
-                plan = optimise(pool, gameweeks, wildcard_gameweek=gameweek, **common)
+                kwarg = "wildcard_gameweek" if chip == "wildcard" else "freehit_gameweek"
+                plan = optimise(pool, gameweeks, **{kwarg: gameweek}, **common)
                 if not plan.solved:
                     continue
                 gain = plan.objective - baseline.objective

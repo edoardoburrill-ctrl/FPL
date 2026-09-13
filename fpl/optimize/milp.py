@@ -36,9 +36,14 @@ XI_MIN = {1: 1, 2: 3, 3: 0, 4: 1}
 XI_MAX = {1: 1, 2: 5, 3: 5, 4: 3}
 MAX_PER_CLUB = 3
 
-# Probability an unused bench player is pulled into the eleven by an auto-sub.
-# Bench points are real but heavily discounted; Phase 3 replaces this constant
-# with the auto-sub probability implied by the minutes model.
+# Base probability, by position, that some starter in that slot blanks and
+# triggers an auto-sub — the part of "will this bench player's points count"
+# that the minutes model has no view on, because it depends on teammates, not
+# this player. The per-player, per-gameweek factor is this base rate scaled by
+# `Player.appears`, the minutes model's own P(plays at all) for that player:
+# a fringe player who rarely gets minutes even when picked is worth much less
+# on the bench than a rotation-risk player who nearly always plays once
+# selected, and a flat position constant could not tell them apart.
 BENCH_WEIGHT = {1: 0.06, 2: 0.13, 3: 0.13, 4: 0.13}
 
 # Token objective weight on holding free transfers; see the note where it is used.
@@ -56,9 +61,18 @@ class Player:
     sell_price: int  # what *you* would get for him, from the ledger
     points: Mapping[int, float]  # gameweek -> expected points
     name: str = ""
+    # gameweek -> P(plays any minutes at all), from the minutes model. Used to
+    # scale the bench weight per player rather than by position alone; a bench
+    # slot that will almost certainly not feature this week is worth less than
+    # one that will, whatever position it plays. Defaults to 1.0 (the old,
+    # position-only behaviour) when the caller does not supply it.
+    p_appears: Mapping[int, float] = field(default_factory=dict)
 
     def ep(self, gameweek: int) -> float:
         return float(self.points.get(gameweek, 0.0))
+
+    def appears(self, gameweek: int) -> float:
+        return float(self.p_appears.get(gameweek, 1.0))
 
 
 @dataclass
@@ -210,6 +224,7 @@ def optimise(
     max_transfers_per_gameweek: int = 3,
     transfer_caps: Mapping[int, int] | None = None,
     wildcard_gameweek: int | None = None,
+    freehit_gameweek: int | None = None,
     forced_out: Iterable[int] = (),
     captain_candidates: int = 25,
     bench_boost_gameweeks: Iterable[int] | None = None,
@@ -226,6 +241,13 @@ def optimise(
     ``transfer_caps`` overrides the per-gameweek transfer limit for specific
     gameweeks — setting one to zero is how the "what if I just hold?" comparison
     that quantifies a transfer's value is computed.
+
+    ``freehit_gameweek`` models a real Free Hit rather than the wildcard upper
+    bound: the squad fielded that gameweek is free to be anything affordable
+    from the bank position at the time, but it is a *temporary* team — it never
+    updates the persistent squad the ledger tracks, does not spend a free
+    transfer, and the persistent squad (and hence next gameweek's starting
+    point) is exactly what it would have been had the chip not been played.
     """
     if not gameweeks:
         raise ValueError("need at least one gameweek to optimise")
@@ -234,6 +256,11 @@ def optimise(
     players = list(players)
     allowed_bench_boost = set(bench_boost_gameweeks or ())
     allowed_triple_captain = set(triple_captain_gameweeks or ())
+    fh_t = (
+        gameweeks.index(freehit_gameweek)
+        if freehit_gameweek is not None and freehit_gameweek in gameweeks
+        else None
+    )
     by_id = {p.element: p for p in players}
     owned = [e for e in current_squad if e in by_id]
     if current_squad and len(owned) != len(current_squad):
@@ -297,6 +324,27 @@ def optimise(
         for p in players
     }
 
+    # Free Hit: a second, temporary squad/eleven/captain that exists only for
+    # `fh_t`. It is intentionally decoupled from `squad`/`start`/`captain` — the
+    # persistent variables are frozen that gameweek (see the transfer block
+    # below) so the real squad carries through unaffected, exactly modelling
+    # the revert at t+1.
+    fh_squad: dict[int, pulp.LpVariable] = {}
+    fh_start: dict[int, pulp.LpVariable] = {}
+    fh_buy: dict[int, pulp.LpVariable] = {}
+    fh_sell: dict[int, pulp.LpVariable] = {}
+    fh_captain: dict[int, pulp.LpVariable] = {}
+    if fh_t is not None:
+        fh_squad = {p.element: pulp.LpVariable(f"fh_squad_{p.element}", cat="Binary") for p in players}
+        fh_start = {p.element: pulp.LpVariable(f"fh_start_{p.element}", cat="Binary") for p in players}
+        fh_buy = {p.element: pulp.LpVariable(f"fh_buy_{p.element}", cat="Binary") for p in players}
+        fh_sell = {p.element: pulp.LpVariable(f"fh_sell_{p.element}", cat="Binary") for p in players}
+        fh_captain_pool = {
+            p.element
+            for p in sorted(players, key=lambda q: -q.ep(freehit_gameweek))[:captain_candidates]
+        }
+        fh_captain = {pid: pulp.LpVariable(f"fh_captain_{pid}", cat="Binary") for pid in fh_captain_pool}
+
     hits = pulp.LpVariable.dicts("hits", index, lowBound=0, cat="Integer")
     free = pulp.LpVariable.dicts(
         "free", index, lowBound=0, upBound=MAX_FREE_TRANSFERS, cat="Integer"
@@ -320,26 +368,43 @@ def optimise(
     contributions = []
     for t, gameweek in enumerate(gameweeks):
         weight = discount**t
-        for player in players:
-            points = player.ep(gameweek)
-            if points == 0:
-                continue
-            bench = BENCH_WEIGHT.get(player.position, 0.12)
-            pid = player.element
-            contributions.append(weight * points * start[pid][t])
-            if t in captain[pid]:
-                contributions.append(weight * points * captain[pid][t])
-            # Bench value: in the squad but not starting.
-            contributions.append(
-                weight * points * bench * (squad[pid][t] - start[pid][t])
-            )
-            if t in bench_boost:
-                # A Bench Boost pays the remaining fraction of the bench.
+        if t == fh_t:
+            # The Free Hit fields a separate, temporary eleven; the persistent
+            # `squad`/`start` stay frozen at their pre-chip values and must not
+            # contribute to this gameweek's objective.
+            for player in players:
+                points = player.ep(gameweek)
+                if points == 0:
+                    continue
+                bench = BENCH_WEIGHT.get(player.position, 0.12) * player.appears(gameweek)
+                pid = player.element
+                contributions.append(weight * points * fh_start[pid])
+                if pid in fh_captain:
+                    contributions.append(weight * points * fh_captain[pid])
                 contributions.append(
-                    weight * points * (1.0 - bench) * boosted[pid][t]
+                    weight * points * bench * (fh_squad[pid] - fh_start[pid])
                 )
-            if t in triple_captain and t in captain[pid]:
-                contributions.append(weight * points * tripled[pid][t])
+        else:
+            for player in players:
+                points = player.ep(gameweek)
+                if points == 0:
+                    continue
+                bench = BENCH_WEIGHT.get(player.position, 0.12) * player.appears(gameweek)
+                pid = player.element
+                contributions.append(weight * points * start[pid][t])
+                if t in captain[pid]:
+                    contributions.append(weight * points * captain[pid][t])
+                # Bench value: in the squad but not starting.
+                contributions.append(
+                    weight * points * bench * (squad[pid][t] - start[pid][t])
+                )
+                if t in bench_boost:
+                    # A Bench Boost pays the remaining fraction of the bench.
+                    contributions.append(
+                        weight * points * (1.0 - bench) * boosted[pid][t]
+                    )
+                if t in triple_captain and t in captain[pid]:
+                    contributions.append(weight * points * tripled[pid][t])
         contributions.append(-weight * TRANSFER_HIT_COST * hits[t])
         # `free_transfers = min(5, remaining + 1)` is expressed as upper bounds,
         # which the solver only pushes against when a hit is at stake. A token
@@ -384,6 +449,34 @@ def optimise(
             if t in captain[pid]:
                 problem += captain[pid][t] <= start[pid][t]
 
+    # Free Hit's temporary squad obeys exactly the same structural rules as
+    # the persistent one — it is a real, legal squad, just a one-week one.
+    if fh_t is not None:
+        problem += pulp.lpSum(fh_squad[p.element] for p in players) == SQUAD_SIZE
+        for position, count in SQUAD_SHAPE.items():
+            problem += (
+                pulp.lpSum(fh_squad[p.element] for p in players if p.position == position)
+                == count
+            )
+        for team in teams:
+            problem += (
+                pulp.lpSum(fh_squad[p.element] for p in players if p.team == team)
+                <= MAX_PER_CLUB
+            )
+        problem += pulp.lpSum(fh_start[p.element] for p in players) == XI_SIZE
+        for position in SQUAD_SHAPE:
+            in_xi = pulp.lpSum(
+                fh_start[p.element] for p in players if p.position == position
+            )
+            problem += in_xi >= XI_MIN[position]
+            problem += in_xi <= XI_MAX[position]
+        problem += pulp.lpSum(fh_captain.values()) == 1
+        for player in players:
+            pid = player.element
+            problem += fh_start[pid] <= fh_squad[pid]
+            if pid in fh_captain:
+                problem += fh_captain[pid] <= fh_start[pid]
+
     # -- transfers -------------------------------------------------------
 
     owned_set = set(owned)
@@ -394,6 +487,11 @@ def optimise(
                 squad[pid][t - 1] if t > 0 else (1 if pid in owned_set else 0)
             )
             problem += squad[pid][t] - previous == buy[pid][t] - sell[pid][t]
+            if t == fh_t:
+                # The persistent squad is untouched by a Free Hit: it is a
+                # one-gameweek loan of an unconstrained squad, not a transfer.
+                problem += buy[pid][t] == 0
+                problem += sell[pid][t] == 0
             # Buying and selling the same player in the same gameweek is never
             # useful and would otherwise let the solver launder budget.
             problem += buy[pid][t] + sell[pid][t] <= 1
@@ -414,7 +512,14 @@ def optimise(
                 )
 
         building_from_scratch = t == 0 and not owned_set
-        if building_from_scratch or (
+        if t == fh_t:
+            # The persistent squad does not move this gameweek at all: no
+            # hits, and the free transfer carries over exactly as if nothing
+            # had been played.
+            problem += hits[t] == 0
+            problem += transfers == 0
+            problem += remaining[t] == free[t]
+        elif building_from_scratch or (
             wildcard_gameweek is not None and gameweeks[t] == wildcard_gameweek
         ):
             # A wildcard — or picking an initial squad — makes any number of
@@ -453,6 +558,8 @@ def optimise(
         if t in triple_captain:
             active.append(triple_captain[t])
         if wildcard_gameweek is not None and gameweeks[t] == wildcard_gameweek:
+            active.append(1)
+        if freehit_gameweek is not None and gameweeks[t] == freehit_gameweek:
             active.append(1)
         if len(active) > 1:
             problem += pulp.lpSum(active) <= 1
@@ -520,6 +627,36 @@ def optimise(
         )
         problem += bank - prior - spend + proceeds >= 0
 
+        if t == fh_t:
+            # The temporary squad is funded from the bank position entering
+            # this gameweek (`bank - prior`; `spend`/`proceeds` above are both
+            # zero here since buy/sell are forced to zero) — never from a
+            # persistent change, since the whole team reverts at t+1. A player
+            # kept from the pre-chip squad is not "bought": only the delta
+            # from `previous` costs anything.
+            for player in players:
+                pid = player.element
+                previous = (
+                    squad[pid][t - 1] if t > 0 else (1 if pid in owned_set else 0)
+                )
+                problem += fh_squad[pid] - previous == fh_buy[pid] - fh_sell[pid]
+                problem += fh_buy[pid] + fh_sell[pid] <= 1
+            fh_transfers = pulp.lpSum(fh_buy[p.element] for p in players)
+            problem += fh_transfers == pulp.lpSum(fh_sell[p.element] for p in players)
+            for position in SQUAD_SHAPE:
+                problem += pulp.lpSum(
+                    fh_buy[p.element] for p in players if p.position == position
+                ) == pulp.lpSum(
+                    fh_sell[p.element] for p in players if p.position == position
+                )
+            fh_spend = pulp.lpSum(p.buy_price * fh_buy[p.element] for p in players)
+            fh_proceeds = pulp.lpSum(
+                (p.sell_price if p.element in owned_set else p.buy_price)
+                * fh_sell[p.element]
+                for p in players
+            )
+            problem += bank - prior - fh_spend + fh_proceeds >= 0
+
     # -- solve -----------------------------------------------------------
 
     solver = solver or pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit)
@@ -541,25 +678,17 @@ def optimise(
     if status in ("Optimal", "Feasible"):
         running_bank = float(bank)
         for t, gameweek in enumerate(gameweeks):
-            chosen = [p.element for p in players if squad[p.element][t].value() > 0.5]
-            starting = [p.element for p in players if start[p.element][t].value() > 0.5]
-            captains = [
-                pid
-                for pid in captain_pool[t]
-                if t in captain[pid] and (captain[pid][t].value() or 0) > 0.5
-            ]
-            bought = [p.element for p in players if buy[p.element][t].value() > 0.5]
-            sold = [p.element for p in players if sell[p.element][t].value() > 0.5]
-
-            running_bank -= sum(by_id[e].buy_price for e in bought)
+            # The persistent squad's own buy/sell — always empty at `fh_t`,
+            # since the Free Hit never touches it — is what actually moves
+            # `running_bank`, so the reported bank reverts correctly at t+1
+            # regardless of what the temporary team spent.
+            real_bought = [p.element for p in players if buy[p.element][t].value() > 0.5]
+            real_sold = [p.element for p in players if sell[p.element][t].value() > 0.5]
+            running_bank -= sum(by_id[e].buy_price for e in real_bought)
             running_bank += sum(
                 (by_id[e].sell_price if e in owned_set else by_id[e].buy_price)
-                for e in sold
+                for e in real_sold
             )
-
-            starters = sorted(starting, key=lambda e: -by_id[e].ep(gameweek))
-            skipper = captains[0] if captains else (starters[0] if starters else None)
-            vice = next((e for e in starters if e != skipper), None)
 
             chip = None
             if t in bench_boost and (bench_boost[t].value() or 0) > 0.5:
@@ -568,6 +697,29 @@ def optimise(
                 chip = "3xc"
             elif wildcard_gameweek is not None and gameweek == wildcard_gameweek:
                 chip = "wildcard"
+            elif freehit_gameweek is not None and gameweek == freehit_gameweek:
+                chip = "freehit"
+
+            if chip == "freehit":
+                chosen = [p.element for p in players if (fh_squad[p.element].value() or 0) > 0.5]
+                starting = [p.element for p in players if (fh_start[p.element].value() or 0) > 0.5]
+                captains = [pid for pid in fh_captain if (fh_captain[pid].value() or 0) > 0.5]
+                bought = [p.element for p in players if (fh_buy[p.element].value() or 0) > 0.5]
+                sold = [p.element for p in players if (fh_sell[p.element].value() or 0) > 0.5]
+            else:
+                chosen = [p.element for p in players if squad[p.element][t].value() > 0.5]
+                starting = [p.element for p in players if start[p.element][t].value() > 0.5]
+                captains = [
+                    pid
+                    for pid in captain_pool[t]
+                    if t in captain[pid] and (captain[pid][t].value() or 0) > 0.5
+                ]
+                bought = real_bought
+                sold = real_sold
+
+            starters = sorted(starting, key=lambda e: -by_id[e].ep(gameweek))
+            skipper = captains[0] if captains else (starters[0] if starters else None)
+            vice = next((e for e in starters if e != skipper), None)
 
             points = sum(by_id[e].ep(gameweek) for e in starting)
             points += by_id[skipper].ep(gameweek) if skipper else 0.0

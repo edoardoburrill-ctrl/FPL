@@ -153,9 +153,12 @@ actually on the pitch, via binomial thinning of the match concession
 distribution — FPL only counts goals conceded while he is playing.
 
 **Known weakness, stated in the module docstring:** bonus uses a normal
-approximation on expected BPS. Bonus is a within-match ranking and the honest
-treatment needs simulation. It is monotone and roughly calibrated, and it is the
-first thing Phase 3 replaces.
+approximation on expected BPS. Bonus is a within-match ranking, and the honest
+treatment is `models/simulate.py`'s ranked Monte Carlo bonus — used where its
+cost is affordable, not inside the optimiser's fast pruning path. The
+approximation's thresholds (`BONUS_THRESHOLDS`, `BONUS_THRESHOLD_SD`) are fit
+against the same two real seasons that verify the bonus tie rule; see
+[`DECISIONS.md`](DECISIONS.md#bonus-thresholds-fit-against-two-real-seasons-not-guessed).
 
 ### `models/projection.py`
 
@@ -287,9 +290,13 @@ candidate gameweek; that is much slower and therefore opt-in.
 Chip evaluation uses `CHIP_DISCOUNT = 0.97`, not the planner's 0.85. See
 [`DECISIONS.md`](DECISIONS.md#chip-timing-discount).
 
-Free Hit is currently evaluated with wildcard semantics, which is an **upper
-bound** on its value because the squad revert is not modelled. Stated in the
-code, not glossed.
+Free Hit's squad revert is modelled explicitly, not approximated with
+wildcard semantics: `optimise(..., freehit_gameweek=...)` gives the MILP a
+second, temporary squad/eleven/captain (`fh_squad`, `fh_start`, `fh_captain`,
+...) that exists only for that one gameweek. The persistent `squad`/`start`
+variables are frozen there (`buy == sell == 0`), so the real squad carries
+through to the next gameweek exactly as if the chip had not been played. See
+[`DECISIONS.md`](DECISIONS.md#free-hit-modelled-explicitly-not-bounded-by-wildcard-semantics).
 
 ---
 

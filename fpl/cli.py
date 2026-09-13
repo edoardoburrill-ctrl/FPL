@@ -417,6 +417,7 @@ def transfers(
     max_hits: int = typer.Option(1, help="Most points hits to consider per week."),
     discount: float = typer.Option(0.85, help="Per-gameweek discount on future points."),
     wildcard: Optional[int] = typer.Option(None, help="Gameweek to play a wildcard."),
+    freehit: Optional[int] = typer.Option(None, help="Gameweek to play a free hit."),
     time_limit: float = typer.Option(90.0, help="Solver time limit in seconds."),
     offline: bool = typer.Option(True),
 ) -> None:
@@ -439,7 +440,7 @@ def transfers(
     brief = build_brief(
         ctx, state, players, projections, gameweeks,
         discount=discount, max_hits=max_hits,
-        wildcard_gameweek=wildcard, time_limit=time_limit,
+        wildcard_gameweek=wildcard, freehit_gameweek=freehit, time_limit=time_limit,
     )
     _render_plan(ctx, brief)
 
@@ -477,6 +478,7 @@ def brief(
     horizon: int = typer.Option(5, help="How many gameweeks to plan over."),
     max_hits: int = typer.Option(1),
     wildcard: Optional[int] = typer.Option(None),
+    freehit: Optional[int] = typer.Option(None),
     time_limit: float = typer.Option(90.0),
     markdown: bool = typer.Option(False, help="Emit markdown instead of a table."),
     offline: bool = typer.Option(True),
@@ -494,7 +496,8 @@ def brief(
     players = build_players(ctx, projections, state)
     result = build_brief(
         ctx, state, players, projections, gameweeks,
-        max_hits=max_hits, wildcard_gameweek=wildcard, time_limit=time_limit,
+        max_hits=max_hits, wildcard_gameweek=wildcard, freehit_gameweek=freehit,
+        time_limit=time_limit,
     )
 
     if markdown:

@@ -110,6 +110,7 @@ def build_brief(
     discount: float = 0.85,
     max_hits: int = 2,
     wildcard_gameweek: int | None = None,
+    freehit_gameweek: int | None = None,
     time_limit: float = 90.0,
 ) -> Brief:
     """Solve the horizon, then solve it again holding, and compare."""
@@ -126,7 +127,12 @@ def build_brief(
         time_limit=time_limit,
     )
 
-    plan = optimise(pool, gameweeks, wildcard_gameweek=wildcard_gameweek, **common)
+    plan = optimise(
+        pool, gameweeks,
+        wildcard_gameweek=wildcard_gameweek,
+        freehit_gameweek=freehit_gameweek,
+        **common,
+    )
     # The value of this week's move is the difference between acting and holding,
     # measured over the whole horizon — not the difference in this gameweek
     # alone, which would ignore what the transfer sets up or forecloses.

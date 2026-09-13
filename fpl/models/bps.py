@@ -29,8 +29,9 @@ instead of asserting a direction, which is what the evidence actually supports.
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from fpl.models.scoring import DEF, FWD, GK, MID
 
@@ -201,6 +202,71 @@ def verify_plausibility(
                  "real": int(real), "residual": residual, "stats": dict(stats)}
             )
     return PlausibilityReport(residuals, extreme)
+
+
+@dataclass(frozen=True)
+class BonusThresholdFit:
+    """The empirical shape of a match's rank-1/2/3 BPS cutoffs.
+
+    ``thresholds`` is ``(rank_3, rank_2, rank_1)`` — ascending, to match the
+    order `models.points.BONUS_THRESHOLDS` is consumed in. ``spread`` is the
+    pooled standard deviation of each rank's cutoff *around its own mean*
+    (not around a shared one, since the three ranks sit at very different
+    typical BPS levels) — the match-to-match uncertainty component of
+    `models.points.expected_bonus`'s normal approximation.
+    """
+
+    thresholds: tuple[float, float, float]
+    spread: float
+    matches: int
+
+
+def fit_bonus_thresholds(matches: Iterable) -> BonusThresholdFit:
+    """Fit the analytic bonus model's thresholds from real match BPS data.
+
+    ``matches`` is an iterable of objects with a ``bps`` mapping (element ->
+    BPS), such as `data.historical.MatchBPS`. For each match with at least
+    three players who featured, the three highest BPS values are its real
+    rank-1/2/3 cutoffs (ties are not special-cased here — `award_bonus`
+    handles ties exactly; this is a *distributional* fit, not a re-derivation
+    of the payout rule). The median of each rank's cutoff across matches
+    replaces the hand-guessed `BONUS_THRESHOLDS`, and the pooled spread
+    around those medians replaces the hand-guessed `BONUS_THRESHOLD_SD`.
+
+    This is the calibration `DECISIONS.md` describes as still open: "nothing
+    is tuned against the backtest yet." It closes that gap for the two
+    threshold constants; `BONUS_PLAYER_SD` (a player's own BPS uncertainty
+    for a *projected*, not observed, fixture) is not something this
+    cross-sectional outcome data can inform and is left as documented before.
+    """
+    top1: list[float] = []
+    top2: list[float] = []
+    top3: list[float] = []
+    for match in matches:
+        values = sorted(match.bps.values(), reverse=True)
+        if len(values) < 3:
+            continue
+        top1.append(float(values[0]))
+        top2.append(float(values[1]))
+        top3.append(float(values[2]))
+
+    if not top1:
+        raise ValueError("no matches with at least three featured players")
+
+    means = (statistics.mean(top3), statistics.mean(top2), statistics.mean(top1))
+    medians = (
+        statistics.median(top3),
+        statistics.median(top2),
+        statistics.median(top1),
+    )
+    deviations = (
+        [v - means[0] for v in top3]
+        + [v - means[1] for v in top2]
+        + [v - means[2] for v in top1]
+    )
+    return BonusThresholdFit(
+        thresholds=medians, spread=statistics.pstdev(deviations), matches=len(top1)
+    )
 
 
 def award_bonus(bps_by_player: Mapping[int, int]) -> dict[int, int]:

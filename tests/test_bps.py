@@ -8,10 +8,15 @@ of the real 1->3, 2->2, 3->1 mapping, silently handing the bonus to the worst
 performer). These tests exist because that bug was real.
 """
 
+from dataclasses import dataclass
+
+import pytest
+
 from fpl.models.bps import (
     DEFAULT_TABLE,
     PlausibilityReport,
     award_bonus,
+    fit_bonus_thresholds,
     partial_bps,
     verify_plausibility,
 )
@@ -122,3 +127,38 @@ def test_plausibility_skips_lines_with_no_bps_field_or_no_appearance():
     ])
     assert report.checked == 0
     assert "no stat lines" in verify_plausibility([]).summary()
+
+
+@dataclass
+class _FakeMatch:
+    bps: dict
+
+
+def test_fit_bonus_thresholds_recovers_known_rank_cutoffs():
+    """Two matches with known top-3 BPS values recover the exact medians.
+
+    Not a network test — see `tests/test_historical.py`'s note on why the
+    real two-season fit (the numbers actually used in `models/points.py`) is
+    verified interactively rather than on every run. This proves the
+    arithmetic on data whose answer is known by construction.
+    """
+    matches = [
+        _FakeMatch({1: 40, 2: 30, 3: 20, 4: 10}),
+        _FakeMatch({1: 44, 2: 34, 3: 24, 4: 5}),
+    ]
+    fit = fit_bonus_thresholds(matches)
+    assert fit.matches == 2
+    # (rank_3, rank_2, rank_1), ascending.
+    assert fit.thresholds == (22.0, 32.0, 42.0)
+    assert fit.spread == pytest.approx(2.0)
+
+
+def test_fit_bonus_thresholds_ignores_matches_with_too_few_players():
+    matches = [_FakeMatch({1: 40, 2: 30}), _FakeMatch({1: 40, 2: 30, 3: 20})]
+    fit = fit_bonus_thresholds(matches)
+    assert fit.matches == 1
+
+
+def test_fit_bonus_thresholds_rejects_no_usable_matches():
+    with pytest.raises(ValueError):
+        fit_bonus_thresholds([_FakeMatch({1: 40, 2: 30})])

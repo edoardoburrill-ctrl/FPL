@@ -2,9 +2,9 @@
 
 import pulp
 
-from fpl.optimize.chips import eligible_gameweeks
+from fpl.optimize.chips import chip_calendar, eligible_gameweeks
 from fpl.optimize.milp import optimise
-from fpl.state.ledger import SquadState
+from fpl.state.ledger import Holding, SquadState
 from tests.test_optimise import make_pool
 
 FAST = pulp.PULP_CBC_CMD(msg=False, timeLimit=30)
@@ -105,6 +105,27 @@ def test_eligibility_respects_the_two_halves():
 def test_unused_chips_are_eligible_everywhere():
     state = SquadState()
     assert eligible_gameweeks(state, "wildcard", [5, 25]) == [5, 25]
+
+
+def test_free_hit_is_worth_less_than_a_wildcard_for_a_lasting_upgrade():
+    """A Free Hit's rebuild reverts after one week; a Wildcard's does not. When
+    the upgrade is worth having every week, not just this one, the Wildcard
+    must be reported as strictly better — which is only possible once the
+    Free Hit's revert is modelled rather than approximated as a Wildcard."""
+    players = make_pool()
+    with_points(players, {
+        1: {**{e: 2.0 for e in range(1, 43)}, **{e: 9.0 for e in range(28, 34)}},
+        2: {**{e: 2.0 for e in range(1, 43)}, **{e: 9.0 for e in range(28, 34)}},
+    })
+    state = SquadState(
+        holdings=[Holding(element=e, purchase_price=50) for e in SQUAD],
+        free_transfers=1,
+    )
+    _, advice = chip_calendar(players, [1, 2], state, include_restructuring=True)
+
+    wildcard = next(a for a in advice if a.chip == "wildcard")
+    freehit = next(a for a in advice if a.chip == "freehit")
+    assert wildcard.gain > freehit.gain
 
 
 def test_a_chip_is_saved_for_a_better_week_later():

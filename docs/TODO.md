@@ -43,7 +43,12 @@ weigh the model's pick against FPL's own displayed `xP`, don't defer to it
 blindly.** Full evidence: `docs/DECISIONS.md`.
 
 - [ ] Tell me any chips you have already played, and in which gameweek.
-      Otherwise the chip planner will offer you chips you no longer have.
+      Otherwise the chip planner will offer you chips you no longer have. This
+      now matters even more for Free Hit specifically: it is modelled properly
+      (the squad reverts next gameweek, as it does in real FPL) rather than as
+      a permanent Wildcard-style upper bound, so its reported value is real,
+      not inflated — the chip calendar's advice is only as good as knowing
+      which chips are actually still available.
 
 ## When automation goes live (Phase 4)
 

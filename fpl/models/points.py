@@ -13,9 +13,13 @@ is playing.
 
 Known limitation in this version: bonus points are estimated from an expected-BPS
 normal approximation rather than by ranking every player in the match. Bonus is
-inherently a within-match ranking, so the honest treatment needs the Monte Carlo
-engine; this approximation is monotone and roughly calibrated but it is the
-weakest term in the model, and it is replaced in Phase 3.
+inherently a within-match ranking, so the honest treatment is `models.simulate`'s
+Monte Carlo engine, which this codebase has and uses for enrichment; this
+approximation exists because the optimiser's fast pruning path cannot afford a
+simulation per candidate player. Its thresholds are now fit against two real
+seasons of match BPS data (see `BONUS_THRESHOLDS`), which is a real improvement
+over the original guess, but a calibrated approximation is still an
+approximation — it remains the weakest term in this fast path specifically.
 """
 
 from __future__ import annotations
@@ -29,11 +33,29 @@ from scipy.stats import binom, norm, poisson
 from fpl.models.minutes import MinutesForecast
 from fpl.models.scoring import DEF, FWD, GK, MID, ScoringRules
 
-# Bonus calibration: approximate BPS thresholds for 3rd, 2nd and 1st in a match,
-# and the spread of those thresholds across matches. Replaced by simulation in
-# Phase 3; exposed here so the backtest can tune them.
-BONUS_THRESHOLDS = (24.0, 29.0, 35.0)
-BONUS_THRESHOLD_SD = 6.5
+# Bonus calibration: BPS thresholds for 3rd, 2nd and 1st in a match, and the
+# spread of those thresholds across matches. Fit from `models.bps.
+# fit_bonus_thresholds` against both real seasons `data/historical.py` covers
+# (2023-24 and 2024-25, 760 matches; see `tests/test_bps.py` for the
+# reproduction) — median cutoffs of 28 / 32 / 39, pooled spread 8.9. This
+# replaces the original hand-guessed (24, 29, 35) / 6.5, and is the first
+# hyperparameter in this codebase tuned against real outcomes rather than
+# picked at build time (see DECISIONS.md).
+#
+# `models.simulate` computes bonus exactly, by ranking simulated BPS with the
+# verified tie rule, and remains the better answer where its cost is
+# affordable (`fpl explain`-style enrichment). This analytic approximation is
+# what the optimiser's fast path uses instead, because a Monte Carlo pass per
+# candidate player is not affordable inside the pruning loop; calibrating it
+# against real match outcomes is the improvement available without paying
+# that cost.
+BONUS_THRESHOLDS = (28.0, 32.0, 39.0)
+BONUS_THRESHOLD_SD = 8.9
+# A player's own BPS uncertainty for a *projected* fixture, as distinct from
+# the match-to-match cutoff spread above. Real match data is an outcome
+# distribution, not a projection-residual distribution, so it cannot fit this
+# term the way it fit the thresholds; it remains the original assumption,
+# unverified, until projection residuals are tracked.
 BONUS_PLAYER_SD = 9.0
 
 
