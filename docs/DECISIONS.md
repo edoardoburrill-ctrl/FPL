@@ -391,8 +391,48 @@ captaincy**, and `docs/TODO.md` says so.
 
 ---
 
+## Bootstrap-robust transfer recommendations
+
+**Decided:** resample every player-gameweek projection with noise scaled to
+its square root (`optimize/robustness.py`), re-solve the horizon many times,
+and report how often each recommended transfer survives.
+
+**Why square-root-scaled noise, not a fixed spread.** The dominant scoring
+terms — goals, assists, bonus — are Poisson-like counts, whose variance grows
+with their mean. A flat proportional noise (`points * sigma`) would make a
+nailed-on defender's 2-point clean-sheet-heavy projection just as uncertain,
+relatively, as an explosive forward's 8-point one; that is backwards. The scale
+constant is set so a mid-table player's sigma lands near the 1.842 MAE the
+real backtest measured (see the season-replay result above) — a sanity check
+on the order of magnitude, not a fitted parameter, and said so in the code.
+
+**What this is not.** It is not a substitute for a real per-player variance
+computed inside `models/points.py` from the breakdown's own terms (Poisson
+variance for the count-like ones, Bernoulli variance for the clean-sheet
+threshold). That would be strictly better and is still open — see below. This
+closes the gap in the meantime with an approximation that is at least honestly
+scaled, rather than leaving "how often does the optimiser's pick survive
+resampling" unanswered.
+
+**Measured effect.** On a small synthetic pool, a blowout upgrade (20 vs 2
+expected points) is recommended in over 90% of 20 resamples; a marginal one
+(2.3 vs 2.0) clears the transfer bar in the point estimate but survives
+resampling well under 60% of the time — exactly the coin-flip PLAN.md asked
+this to expose. `fpl transfers --bootstrap N` and `fpl brief --bootstrap N`
+report it per move; `--bootstrap 0` (the default) skips it, since it
+multiplies solve time by roughly `N`.
+
+---
+
 ## Still open
 
+- **A real per-player variance for the bootstrap noise.** The resampling above
+  perturbs the already-summed `expected_points`, because the fast analytic
+  path does not expose a variance per term. Computing one inside
+  `models/points.py` — Poisson variance for goals/assists/bonus, Bernoulli
+  variance for the clean-sheet threshold, summed the way independent terms
+  combine — would replace a documented approximation with the real thing,
+  without changing anything downstream of `Player.points`.
 - **Bonus in the fast analytic path** (`points.py`, used by the optimiser) is
   still a normal approximation on expected BPS. `models/simulate.py` now
   computes bonus properly — by simulating the match and ranking real BPS

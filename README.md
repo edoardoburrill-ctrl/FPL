@@ -73,6 +73,7 @@ fpl squad                          # your squad, selling prices, bank, chips, fr
 fpl set-squad "..." --bank 0.5     # record your squad by hand, no entry id required
 fpl explain haaland                # term-by-term breakdown of a projection
 fpl transfers --horizon 5          # multi-gameweek transfer plan
+fpl transfers --bootstrap 20       # + how often each transfer survives resampling
 fpl brief                          # the one command: what to do before this deadline
 fpl brief --markdown               # same, as markdown for a report or job summary
 fpl chips --horizon 8              # when to play each chip, measured in points

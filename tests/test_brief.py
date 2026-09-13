@@ -5,6 +5,7 @@ import pytest
 from fpl.models.projection import build_context
 from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
 from fpl.optimize.milp import Decision, Player, optimise, prune_pool
+from fpl.optimize.robustness import BootstrapReport
 from fpl.report.brief import COIN_FLIP_MARGIN, build_brief, deadline_for, pair_transfers
 from fpl.state.ledger import Holding, SquadState
 from tests.fixtures.synthetic import build_universe
@@ -129,3 +130,40 @@ def test_transfers_pair_by_position():
     )
     moves = pair_transfers(decision, players)
     assert {(m.out_element, m.in_element) for m in moves} == {(1, 11), (2, 10)}
+    assert all(m.stability is None for m in moves)
+
+
+def test_transfers_carry_bootstrap_stability_when_a_report_is_given():
+    def player(element, position):
+        return Player(element, position, team=1, buy_price=50, sell_price=50,
+                      points={1: 1.0}, name=f"p{element}")
+
+    players = {e: player(e, p) for e, p in
+               [(1, 2), (2, 3), (10, 3), (11, 2)]}
+    decision = Decision(
+        gameweek=1, squad=[], starting=[], captain=None, vice=None,
+        transfers_in=[10, 11], transfers_out=[1, 2],
+        free_transfers=0, hits=0, bank=0.0, expected_points=0.0,
+    )
+    report = BootstrapReport(requested=10, solved=10,
+                             move_frequency={(1, 11): 0.9, (2, 10): 0.4})
+    moves = pair_transfers(decision, players, report)
+    stability = {(m.out_element, m.in_element): m.stability for m in moves}
+    assert stability == {(1, 11): 0.9, (2, 10): 0.4}
+
+
+def test_build_brief_attaches_a_bootstrap_report_when_requested(setup, optimal_state):
+    ctx, gameweeks, projections, players = setup
+    brief = build_brief(ctx, optimal_state, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT, bootstrap_resamples=4, bootstrap_seed=1)
+    assert brief.bootstrap is not None
+    assert brief.bootstrap.solved <= 4
+    for move in brief.moves:
+        assert move.stability is not None
+
+
+def test_build_brief_without_bootstrap_leaves_it_unset(setup, optimal_state):
+    ctx, gameweeks, projections, players = setup
+    brief = build_brief(ctx, optimal_state, players, projections, gameweeks,
+                        time_limit=TIME_LIMIT)
+    assert brief.bootstrap is None

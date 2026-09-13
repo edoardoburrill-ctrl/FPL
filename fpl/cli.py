@@ -418,6 +418,12 @@ def transfers(
     discount: float = typer.Option(0.85, help="Per-gameweek discount on future points."),
     wildcard: Optional[int] = typer.Option(None, help="Gameweek to play a wildcard."),
     time_limit: float = typer.Option(90.0, help="Solver time limit in seconds."),
+    bootstrap: int = typer.Option(
+        0,
+        help="Resample the projections this many times and report how often "
+             "each transfer survives (0 = off). Roughly multiplies solve time "
+             "by this count, capped at a 20s solve per resample.",
+    ),
     offline: bool = typer.Option(True),
 ) -> None:
     """Plan transfers over a rolling horizon."""
@@ -440,6 +446,7 @@ def transfers(
         ctx, state, players, projections, gameweeks,
         discount=discount, max_hits=max_hits,
         wildcard_gameweek=wildcard, time_limit=time_limit,
+        bootstrap_resamples=bootstrap,
     )
     _render_plan(ctx, brief)
 
@@ -470,6 +477,23 @@ def _render_plan(ctx, brief) -> None:
         f"(holding instead: {brief.hold_plan.objective:.2f}) — "
         f"acting is worth [bold]{brief.gain:+.2f}[/bold] points"
     )
+    if brief.bootstrap is not None:
+        console.print(_stability_text(brief.moves, brief.bootstrap))
+
+
+def _stability_text(moves, bootstrap) -> str:
+    if bootstrap.solved == 0:
+        return "[yellow]Bootstrap resamples never produced a plan.[/yellow]"
+    if not moves:
+        return (
+            f"Held in {bootstrap.hold_frequency:.0%} of {bootstrap.solved} "
+            f"bootstrap resamples."
+        )
+    parts = [
+        f"{move.out_name} → {move.in_name}: chosen in {move.stability:.0%}"
+        for move in moves
+    ]
+    return f"Bootstrap ({bootstrap.solved} resamples): " + "; ".join(parts)
 
 
 @app.command()
@@ -479,6 +503,11 @@ def brief(
     wildcard: Optional[int] = typer.Option(None),
     time_limit: float = typer.Option(90.0),
     markdown: bool = typer.Option(False, help="Emit markdown instead of a table."),
+    bootstrap: int = typer.Option(
+        0,
+        help="Resample the projections this many times and report how often "
+             "each transfer survives (0 = off).",
+    ),
     offline: bool = typer.Option(True),
 ) -> None:
     """The one command that matters: what to do before this deadline."""
@@ -495,6 +524,7 @@ def brief(
     result = build_brief(
         ctx, state, players, projections, gameweeks,
         max_hits=max_hits, wildcard_gameweek=wildcard, time_limit=time_limit,
+        bootstrap_resamples=bootstrap,
     )
 
     if markdown:
@@ -520,10 +550,16 @@ def brief(
         )
     else:
         for move in result.moves:
+            stability = (
+                f" (chosen in {move.stability:.0%} of bootstrap resamples)"
+                if move.stability is not None
+                else ""
+            )
             console.print(
                 f"  Sell {_name(ctx, move.out_element)} "
                 f"(£{move.out_sell_price/10:.1f}m) → "
                 f"buy {_name(ctx, move.in_element)} (£{move.in_buy_price/10:.1f}m)"
+                f"{stability}"
             )
         cost = f"{result.hits} hit(s), -{result.hits * TRANSFER_HIT_COST} pts" \
             if result.hits else "free"

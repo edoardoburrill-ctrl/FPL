@@ -277,6 +277,27 @@ variables — relaxation values that violate the budget — and accepting anythi
 that merely looks like a squad would emit illegal advice. This was a real bug
 before the guard existed.
 
+### `optimize/robustness.py`
+
+The MILP maximises expected points against one point estimate per
+player-gameweek. `bootstrap_transfers` re-solves the horizon many times
+against perturbed projections (`resample_points`) and reports how often each
+first-gameweek transfer recurs — a transfer chosen in 95% of resamples is a
+real edge, one chosen in 40% is a coin-flip that should not cost a hit.
+
+The perturbation is noise scaled to the square root of each projection, not a
+fixed or proportional spread — the dominant scoring terms (goals, assists,
+bonus) are Poisson-like counts whose variance grows with their mean. The
+scale constant is a documented sanity check against the backtest's measured
+MAE, not a fitted parameter — see
+[`DECISIONS.md`](DECISIONS.md#bootstrap-robust-transfer-recommendations). It
+is a stated approximation because the fast analytic path
+(`models/points.py`) does not yet expose a per-player variance; wiring one
+through would let this module resample the real thing instead.
+
+Off by default (`bootstrap_resamples=0` in `build_brief`, `--bootstrap 0` in
+the CLI) because it multiplies solve time by roughly the resample count.
+
 ### `optimize/chips.py`
 
 Bench Boost and Triple Captain are decided *inside* one solve — the program picks
@@ -385,6 +406,7 @@ If you are extending this, these are the intended insertion points.
 | Add a chip | `milp.py` if it adds a term, `chips.py` if it restructures |
 | Add an output format | `report/`, reusing `build_brief` |
 | Improve the backtest | `backtest/adapter.py` for a new data source, `backtest/metrics.py` for a new comparison |
+| Give the bootstrap real per-player variance | `models/points.py` (compute it per term), then `optimize/robustness.py`'s `resample_points` |
 
 The one thing not to do is compute points anywhere except through
 `ScoringRules`. That is what keeps `fpl verify` meaningful.

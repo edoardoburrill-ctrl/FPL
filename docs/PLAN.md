@@ -450,11 +450,15 @@ and has been run against 2024-25. Its result is the headline of this phase: the
 projection engine beats a do-nothing baseline but currently **loses to FPL's
 own `xP`** on ranking and badly on captaincy-pick quality — see
 `DECISIONS.md` for the full numbers and the working theory (no odds data, no
-injury signal, both structural gaps in this specific backtest). Still open:
-wiring the simulation-based bonus into the fast path the optimiser uses,
-bootstrap-robust transfer recommendations, calibration reliability plots, and —
-the thing most likely to close the gap — re-running this backtest with real
-historical odds once that data source is identified. Hyperparameters (`γ`,
+injury signal, both structural gaps in this specific backtest).
+Bootstrap-robust transfer recommendations now exist (`optimize/robustness.py`,
+`fpl transfers --bootstrap N`) — see `DECISIONS.md` for how the resampling
+noise is scaled and what it is not yet a substitute for. Still open: wiring
+the simulation-based bonus into the fast path the optimiser uses, a real
+per-player variance to replace the bootstrap's current square-root heuristic,
+calibration reliability plots, and — the thing most likely to close the
+captaincy gap — re-running this backtest with real historical odds once that
+data source is identified. Hyperparameters (`γ`,
 horizon, shrinkage `k`, decay `ξ`) are not yet tuned against the backtest; they
 are still the values chosen at build time. *Ends with:* measured evidence the
 thing beats its baselines — which now exists, and currently argues for caution,
@@ -501,6 +505,7 @@ fpl/
     milp.py                 # §4 multi-gameweek program, chips included
     chips.py                # chip calendar and eligibility
     inputs.py               # context + state -> optimiser inputs
+    robustness.py           # bootstrap resampling of projections
   state/
     ledger.py               # §5 squad, purchase prices, free transfers
     resolve.py              # name resolution for manual squad entry

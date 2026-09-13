@@ -9,6 +9,7 @@ from typing import Mapping, Sequence
 from fpl.models.points import PlayerProjection
 from fpl.models.projection import ProjectionContext
 from fpl.optimize.milp import Decision, Plan, Player, optimise, prune_pool
+from fpl.optimize.robustness import BootstrapReport, bootstrap_transfers
 from fpl.state.ledger import TRANSFER_HIT_COST, SquadState
 
 # A transfer worth less than this over the whole horizon is noise, not an edge.
@@ -25,6 +26,9 @@ class TransferMove:
     in_name: str
     out_sell_price: int
     in_buy_price: int
+    # Fraction of bootstrap resamples that recommended this exact move; None
+    # when bootstrapping was not requested. See `optimize/robustness.py`.
+    stability: float | None = None
 
 
 @dataclass
@@ -46,6 +50,7 @@ class Brief:
     bank: float
     chips_available: list[str]
     warnings: list[str] = field(default_factory=list)
+    bootstrap: BootstrapReport | None = None
 
     @property
     def recommends_transfer(self) -> bool:
@@ -73,7 +78,9 @@ def deadline_for(ctx: ProjectionContext, gameweek: int) -> datetime | None:
 
 
 def pair_transfers(
-    decision: Decision, players: Mapping[int, Player]
+    decision: Decision,
+    players: Mapping[int, Player],
+    bootstrap: BootstrapReport | None = None,
 ) -> list[TransferMove]:
     """Pair sales with purchases by position, which is how a manager reads them.
 
@@ -95,6 +102,11 @@ def pair_transfers(
                 in_name=in_player.name,
                 out_sell_price=out_player.sell_price,
                 in_buy_price=in_player.buy_price,
+                stability=(
+                    bootstrap.frequency(out_element, in_element)
+                    if bootstrap is not None
+                    else None
+                ),
             )
         )
     return moves
@@ -111,8 +123,18 @@ def build_brief(
     max_hits: int = 2,
     wildcard_gameweek: int | None = None,
     time_limit: float = 90.0,
+    bootstrap_resamples: int = 0,
+    bootstrap_seed: int | None = None,
 ) -> Brief:
-    """Solve the horizon, then solve it again holding, and compare."""
+    """Solve the horizon, then solve it again holding, and compare.
+
+    ``bootstrap_resamples`` (0 = off) re-solves the horizon that many more
+    times against perturbed projections and reports how often each
+    recommended transfer survives (`optimize/robustness.py`) — a transfer
+    chosen in 95% of resamples is a real edge; one chosen in 40% is a
+    coin-flip that should not cost a hit. Off by default because it multiplies
+    solve time by roughly ``bootstrap_resamples``.
+    """
     gameweek = gameweeks[0]
     pool = prune_pool(players, gameweeks, always_include=state.element_ids)
     by_id = {p.element: p for p in pool}
@@ -141,6 +163,22 @@ def build_brief(
             captain_margin=0.0, captain_alternatives=[], starting=[], bench=[],
             hits=0, free_transfers=state.free_transfers, bank=state.bank / 10,
             chips_available=state.chips_available(gameweek), warnings=warnings,
+        )
+
+    bootstrap_report: BootstrapReport | None = None
+    if bootstrap_resamples > 0:
+        # `time_limit` is passed to `bootstrap_transfers` directly (capped, since
+        # it multiplies by the resample count), so it is dropped from the shared
+        # kwargs to avoid handing `optimise` two values for it.
+        bootstrap_kwargs = {k: v for k, v in common.items() if k != "time_limit"}
+        bootstrap_kwargs["wildcard_gameweek"] = wildcard_gameweek
+        bootstrap_report = bootstrap_transfers(
+            pool,
+            gameweeks,
+            bootstrap_kwargs,
+            n_resamples=bootstrap_resamples,
+            seed=bootstrap_seed,
+            time_limit=min(time_limit, 20.0),
         )
 
     if not plan.proven_optimal:
@@ -183,7 +221,7 @@ def build_brief(
         deadline=deadline_for(ctx, gameweek),
         plan=plan,
         hold_plan=hold,
-        moves=pair_transfers(decision, by_id),
+        moves=pair_transfers(decision, by_id, bootstrap_report),
         gain=gain,
         captain=decision.captain,
         vice=decision.vice,
@@ -196,6 +234,7 @@ def build_brief(
         bank=decision.bank,
         chips_available=state.chips_available(gameweek),
         warnings=warnings,
+        bootstrap=bootstrap_report,
     )
 
 
@@ -229,11 +268,16 @@ def render_markdown(
         )
     else:
         for move in brief.moves:
+            stability = (
+                f" — chosen in {move.stability:.0%} of bootstrap resamples"
+                if move.stability is not None
+                else ""
+            )
             lines.append(
                 f"- Sell **{names.get(move.out_element, move.out_element)}** "
                 f"(£{move.out_sell_price/10:.1f}m) → buy "
                 f"**{names.get(move.in_element, move.in_element)}** "
-                f"(£{move.in_buy_price/10:.1f}m)"
+                f"(£{move.in_buy_price/10:.1f}m){stability}"
             )
         cost = (
             f"{brief.hits} hit ({-brief.hits * TRANSFER_HIT_COST} pts)"
