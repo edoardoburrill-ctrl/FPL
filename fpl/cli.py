@@ -18,7 +18,7 @@ from fpl.data.fpl_client import FPLUnavailable
 from fpl.models.projection import project_gameweek
 from fpl.models.scoring import POSITION_NAMES, verify_rules
 from fpl.optimize.inputs import build_players, horizon_gameweeks, project_horizon
-from fpl.optimize.milp import prune_pool
+from fpl.optimize.milp import optimise, prune_pool
 from fpl.optimize.chips import chip_calendar
 from fpl.report.brief import build_brief, render_markdown
 from fpl.state.ledger import CHIP_NAMES, Holding, TRANSFER_HIT_COST, SquadState
@@ -469,6 +469,76 @@ def _render_plan(ctx, brief) -> None:
         f"Objective over the horizon: [bold]{brief.plan.objective:.2f}[/bold] "
         f"(holding instead: {brief.hold_plan.objective:.2f}) — "
         f"acting is worth [bold]{brief.gain:+.2f}[/bold] points"
+    )
+
+
+@app.command()
+def draft(
+    budget: float = typer.Option(
+        100.0,
+        help="Total budget in millions: your real squad value plus bank, as "
+             "shown on the FPL transfers page when you wildcard.",
+    ),
+    horizon: int = typer.Option(6, help="How many gameweeks to plan over."),
+    time_limit: float = typer.Option(120.0, help="Solver time limit in seconds."),
+    offline: bool = typer.Option(True),
+) -> None:
+    """Build a fifteen-man squad from scratch, as if picking a first squad.
+
+    Ignores any squad recorded in the ledger: this is the wildcard question,
+    "what would I pick today with an empty team and this budget?"
+    """
+    application = _app(offline)
+    ctx = application.context()
+    gameweeks = horizon_gameweeks(ctx, horizon)
+    console.print(f"Projecting gameweeks {gameweeks[0]}-{gameweeks[-1]}...")
+    projections = project_horizon(ctx, gameweeks)
+    players = build_players(ctx, projections, SquadState())
+    pool = prune_pool(players, gameweeks)
+
+    plan = optimise(
+        pool, gameweeks, current_squad=[], bank=int(round(budget * 10)),
+        free_transfers=1, time_limit=time_limit,
+    )
+    if not plan.solved:
+        console.print(f"[red]Optimiser returned {plan.status}[/red]")
+        raise typer.Exit(1)
+    decision = plan.first()
+
+    by_id = {p.element: p for p in pool}
+    spent = sum(by_id[e].buy_price for e in decision.squad)
+    gw = gameweeks[0]
+    console.print(f"\n[bold]Draft squad for GW{gw}[/bold] — "
+                  f"£{spent / 10:.1f}m of £{budget:.1f}m, bank £{decision.bank:.1f}m")
+    if not plan.proven_optimal:
+        console.print("[yellow]Solver stopped at the time limit; raise "
+                      "--time-limit for a proven optimum.[/yellow]")
+
+    table = Table()
+    for column in ("", "Player", "Pos", "Team", "Price", "xP GW%d" % gw, "xP horizon"):
+        table.add_column(column)
+    order = sorted(
+        decision.squad,
+        key=lambda e: (e not in decision.starting, by_id[e].position,
+                       -by_id[e].ep(gw)),
+    )
+    teams = {int(t["id"]): t["short_name"] for t in ctx.teams}
+    for element in order:
+        player = by_id[element]
+        role = "C" if element == decision.captain else (
+            "V" if element == decision.vice else (
+                "" if element in decision.starting else "bench"))
+        table.add_row(
+            role, _name(ctx, element), POSITION_NAMES[player.position],
+            teams.get(player.team, "?"), f"£{player.buy_price / 10:.1f}m",
+            f"{player.ep(gw):.2f}",
+            f"{sum(player.ep(g) for g in gameweeks):.2f}",
+        )
+    console.print(table)
+    console.print(
+        f"Projected {decision.expected_points:.1f} points in GW{gw}. "
+        "Compare the captain pick against FPL's own displayed xP before "
+        "locking it in."
     )
 
 
